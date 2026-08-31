@@ -130,10 +130,6 @@ Código:
                         system_instruction=SYSTEM_PROMPT,
                         max_output_tokens=2048,
                         response_mime_type="application/json",
-                        # Desliga o "raciocínio interno" do modelo: para essa
-                        # tarefa simples, ele consumia tokens pensando e não
-                        # sobrava espaço para escrever o JSON de resposta.
-                        thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),
                 )
 
