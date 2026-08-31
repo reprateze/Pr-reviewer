@@ -1,0 +1,29 @@
+name: PR Reviewer AI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar API do PR Reviewer AI
+        env:
+          REVIEWER_API_URL: ${{ secrets.REVIEWER_API_URL }}
+        run: |
+          curl -X POST "$REVIEWER_API_URL/review" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "owner": "${{ github.repository_owner }}",
+              "repo": "${{ github.event.repository.name }}",
+              "pr_number": ${{ github.event.pull_request.number }},
+              "head_ref": "${{ github.event.pull_request.head.sha }}"
+            }'
+
+# Observações para configuração:
+# 1. REVIEWER_API_URL é a URL onde o backend (FastAPI) está rodando
+#    (ex: um deploy no Render/Railway/servidor próprio), configurada como
+#    Secret no repositório em Settings > Secrets and variables > Actions.
+# 2. O backend precisa ter GITHUB_TOKEN e LLM_API_KEY configurados nele mesmo,
+#    não neste workflow, já que quem chama a IA e comenta é o backend.
