@@ -118,6 +118,8 @@ Código:
                     f"[LLM] Analisando "
                     f"{filename} → {function.name}()"
                 )
+                if extra_context:
+                    print(f"[LLM] Contexto extra enviado:\n{extra_context}\n")
 
                 response = self.client.models.generate_content(
                     model=self.model,
@@ -130,10 +132,6 @@ Código:
                         system_instruction=SYSTEM_PROMPT,
                         max_output_tokens=2048,
                         response_mime_type="application/json",
-                        # Desliga o "raciocínio interno" do modelo: para essa
-                        # tarefa simples, ele consumia tokens pensando e não
-                        # sobrava espaço para escrever o JSON de resposta.
-                        thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),
                 )
 

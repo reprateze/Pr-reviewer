@@ -31,11 +31,15 @@ class ContextGatherer:
         function_name: str,
         max_files_to_check: int = 15,
         tree: list[dict] | None = None,
-    ) -> list[str]:
+        also_check_names: list[str] | None = None,
+    ) -> dict[str, list[str]]:
         """
-        Retorna uma lista de caminhos de arquivos de teste que já mencionam
-        o nome da função analisada (indício de que já existe alguma
-        cobertura para ela).
+        Retorna um dict {nome_da_função: [arquivos de teste que a mencionam]}.
+
+        Por padrão verifica só `function_name`, mas também aceita nomes
+        extras via `also_check_names` (ex: as dependências dela) — assim
+        conseguimos avisar a IA mesmo quando o teste existente cobre uma
+        função auxiliar, não a função principal analisada.
 
         Se `tree` for fornecida (lista já obtida via get_repo_tree), ela é
         reutilizada em vez de buscar a árvore do repositório de novo — útil
@@ -47,7 +51,7 @@ class ContextGatherer:
             except Exception:
                 # Se não conseguir listar a árvore do repo, segue sem
                 # contexto extra em vez de quebrar a análise inteira.
-                return []
+                return {}
 
         test_file_paths = [
             item["path"]
@@ -55,26 +59,36 @@ class ContextGatherer:
             if item.get("type") == "blob" and _looks_like_test_file(item["path"])
         ]
 
-        related_files = []
+        names_to_check = [function_name] + list(also_check_names or [])
+        results: dict[str, list[str]] = {name: [] for name in names_to_check}
+
         for path in test_file_paths[:max_files_to_check]:
             try:
                 content = self.github.get_file_content(owner, repo, path, ref)
             except Exception:
                 continue
 
-            if function_name in content:
-                related_files.append(path)
+            for name in names_to_check:
+                if name in content:
+                    results[name].append(path)
 
-        return related_files
+        return results
 
-    def build_context_summary(self, related_tests: list[str]) -> str:
+    def build_context_summary(self, related_tests: dict[str, list[str]]) -> str:
         """Formata os arquivos encontrados em um texto curto para o prompt da IA."""
-        if not related_tests:
-            return "Nenhum teste existente encontrado para esta função no repositório."
+        found = {name: files for name, files in related_tests.items() if files}
 
-        files_list = ", ".join(related_tests)
+        if not found:
+            return "Nenhum teste existente encontrado para esta função (ou suas dependências) no repositório."
+
+        parts = []
+        for name, files in found.items():
+            files_list = ", ".join(files)
+            parts.append(f"'{name}' já é mencionada em: {files_list}")
+
         return (
-            f"Já existem arquivos de teste que mencionam esta função: {files_list}. "
-            "Considere isso ao sugerir novos testes: evite duplicar cenários que "
-            "provavelmente já estão cobertos, e foque em lacunas."
+            "Testes já existentes encontrados no repositório: "
+            + "; ".join(parts)
+            + ". Considere isso ao sugerir novos testes: evite duplicar cenários "
+            "que provavelmente já estão cobertos, e foque em lacunas."
         )
