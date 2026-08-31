@@ -87,6 +87,15 @@ def review_pull_request(payload: ReviewRequest):
             if func.num_lines > settings.max_diff_lines:
                 continue  # evita mandar funções gigantes para a IA
 
+            # Nomes de dependências (funções chamadas, existentes no mesmo
+            # arquivo) também entram na busca por testes já existentes —
+            # um teste de validar_numero() é relevante mesmo quando estamos
+            # analisando calcular_porcentagem(), que a utiliza por dentro.
+            dependency_names = [
+                f.name for f in functions
+                if f.name in func.called_names and f.name != func.name
+            ]
+
             try:
                 related_tests = context_gatherer.find_related_tests(
                     payload.owner,
@@ -94,6 +103,7 @@ def review_pull_request(payload: ReviewRequest):
                     payload.head_ref,
                     func.name,
                     tree=repo_tree,
+                    also_check_names=dependency_names,
                 )
                 tests_summary = context_gatherer.build_context_summary(related_tests)
             except Exception:
