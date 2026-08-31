@@ -21,6 +21,7 @@ class FunctionInfo:
     args: list = field(default_factory=list)
     docstring: str | None = None
     source: str = ""
+    called_names: list = field(default_factory=list)  # nomes de funções chamadas dentro dela
 
 
 class CodeAnalyzer:
@@ -50,6 +51,16 @@ class CodeAnalyzer:
                     isinstance(n, ast.Try) for n in ast.walk(node)
                 )
 
+                # Identifica chamadas diretas a outras funções dentro do corpo
+                # (ex: calcular_media() chamando sum()). Usado depois para
+                # buscar o código dessas dependências e dar mais contexto à IA.
+                called_names = sorted({
+                    n.func.id
+                    for n in ast.walk(node)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id != node.name  # ignora recursão direta
+                })
+
                 func_source = "\n".join(source_lines[start - 1:end])
 
                 functions.append(
@@ -63,6 +74,7 @@ class CodeAnalyzer:
                         args=[a.arg for a in node.args.args],
                         docstring=ast.get_docstring(node),
                         source=func_source,
+                        called_names=called_names,
                     )
                 )
 
@@ -89,6 +101,33 @@ class CodeAnalyzer:
             "avg_complexity": round(avg_complexity, 1),
             "functions_without_try_except": without_try,
         }
+
+
+def build_dependency_context(
+    target: FunctionInfo, all_functions: list[FunctionInfo], max_deps: int = 3
+) -> str:
+    """
+    Monta um bloco de texto com o código de outras funções, definidas no
+    mesmo arquivo, que a função alvo chama. Isso dá à IA visibilidade sobre
+    o comportamento das dependências, não só da função isolada.
+
+    Limita a `max_deps` funções para não estourar o tamanho do prompt.
+    """
+    by_name = {f.name: f for f in all_functions}
+    dependencies = [
+        by_name[name]
+        for name in target.called_names
+        if name in by_name and name != target.name
+    ][:max_deps]
+
+    if not dependencies:
+        return ""
+
+    blocks = []
+    for dep in dependencies:
+        blocks.append(f"# Função auxiliar: {dep.name}()\n{dep.source}")
+
+    return "\n\n".join(blocks)
 
 
 def extract_changed_python_files(diff_text: str) -> dict[str, str]:

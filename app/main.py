@@ -12,9 +12,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.config import settings
-from app.code_analyzer import CodeAnalyzer
+from app.code_analyzer import CodeAnalyzer, build_dependency_context
 from app.github_client import GitHubClient
 from app.llm_client import LLMClient
+from app.context_gatherer import ContextGatherer
 from app.comment_formatter import format_pr_comment
 
 app = FastAPI(
@@ -44,11 +45,19 @@ def review_pull_request(payload: ReviewRequest):
     github = GitHubClient()
     analyzer = CodeAnalyzer()
     llm = LLMClient()
+    context_gatherer = ContextGatherer(github_client=github)
 
     try:
         pr_files = github.get_pr_files(payload.owner, payload.repo, payload.pr_number)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Erro ao buscar arquivos do PR: {exc}")
+
+    # Busca a árvore de arquivos do repositório uma única vez (reutilizada
+    # para todas as funções analisadas neste PR, evitando chamadas repetidas).
+    try:
+        repo_tree = github.get_repo_tree(payload.owner, payload.repo, payload.head_ref)
+    except Exception:
+        repo_tree = []
 
     results = []
 
@@ -70,12 +79,46 @@ def review_pull_request(payload: ReviewRequest):
 
         functions = analyzer.analyze_source(content)
 
+        # NOTA: limitado a 1 função por arquivo por enquanto, para economizar
+        # a cota gratuita da API (5 req/min, 20 req/dia) durante os testes.
+        # Remover o "[:1]" quando estiver pronto para rodar o experimento
+        # completo (ou trocar para um plano pago / outra chave).
         for func in functions[:1]:
             if func.num_lines > settings.max_diff_lines:
                 continue  # evita mandar funções gigantes para a IA
 
             try:
-                analysis = llm.suggest_tests_for_function(func, filename)
+                related_tests = context_gatherer.find_related_tests(
+                    payload.owner,
+                    payload.repo,
+                    payload.head_ref,
+                    func.name,
+                    tree=repo_tree,
+                )
+                tests_summary = context_gatherer.build_context_summary(related_tests)
+            except Exception:
+                tests_summary = None
+
+            # Contexto de dependências: código de outras funções do mesmo
+            # arquivo que esta função chama (ex: validar_email() dentro de
+            # cadastrar_usuario()). Ajuda a IA a entender o comportamento
+            # completo, não só um pedaço isolado.
+            dependency_context = build_dependency_context(func, functions)
+
+            context_parts = []
+            if dependency_context:
+                context_parts.append(
+                    f"Funções auxiliares chamadas por esta função:\n{dependency_context}"
+                )
+            if tests_summary:
+                context_parts.append(tests_summary)
+
+            extra_context = "\n\n".join(context_parts) if context_parts else None
+
+            try:
+                analysis = llm.suggest_tests_for_function(
+                    func, filename, extra_context=extra_context
+                )
             except Exception as exc:
                 analysis = {
                     "risk_level": "desconhecido",
