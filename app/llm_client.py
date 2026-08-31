@@ -118,6 +118,8 @@ Código:
                     f"[LLM] Analisando "
                     f"{filename} → {function.name}()"
                 )
+                if extra_context:
+                    print(f"[LLM] Contexto extra enviado:\n{extra_context}\n")
 
                 response = self.client.models.generate_content(
                     model=self.model,
