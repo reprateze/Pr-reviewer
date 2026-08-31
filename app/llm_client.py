@@ -1,3 +1,11 @@
+"""
+Client responsável por conversar com a API do modelo de linguagem (LLM)
+e pedir sugestões de casos de teste para funções alteradas em um PR.
+
+Usa o SDK oficial do Google (google-genai). Inclui controle de taxa de
+requisições (rate limiting) porque o nível gratuito do Gemini tem um
+limite baixo de chamadas por minuto e por dia.
+"""
 import json
 import time
 
@@ -14,6 +22,14 @@ Dado o código de uma função alterada em um Pull Request, sua tarefa é:
 1. Identificar se a função parece ter cobertura de teste adequada.
 2. Sugerir de 1 a 4 casos de teste relevantes (incluindo cenários de erro/borda).
 3. Apontar riscos específicos (ex: falta de tratamento de exceção, complexidade alta).
+
+Você pode receber um "Contexto adicional" com duas informações extras:
+- O código de funções auxiliares chamadas pela função analisada (dependências),
+  para você entender o comportamento completo, não só um pedaço isolado.
+- Se já existem arquivos de teste no repositório que mencionam essa função.
+  Quando isso acontecer, NÃO repita cenários que provavelmente já estão
+  cobertos — foque em lacunas reais (casos de borda, erros, tipos inválidos)
+  que ainda não parecem testados.
 
 Responda SOMENTE em JSON válido, no seguinte formato, sem nenhum texto adicional
 e sem usar blocos de código markdown (```):
@@ -68,14 +84,15 @@ class LLMClient:
         self,
         function: FunctionInfo,
         filename: str,
+        extra_context: str | None = None,
     ) -> str:
-        # CORREÇÃO 1: A string multilinha agora é fechada corretamente
+        context_block = f"\nContexto adicional: {extra_context}\n" if extra_context else ""
         return f"""Arquivo: {filename}
 Função: {function.name}
 Linhas: {function.num_lines}
 Complexidade aproximada (nº de branches): {function.num_branches}
 Possui try/except: {function.has_try_except}
-
+{context_block}
 Código:
 ```python
 {function.source}
@@ -87,6 +104,7 @@ Código:
         function: FunctionInfo,
         filename: str,
         max_retries: int = 2,
+        extra_context: str | None = None,
     ) -> dict:
 
         last_error: Exception | None = None
@@ -106,11 +124,16 @@ Código:
                     contents=self._build_user_prompt(
                         function,
                         filename,
+                        extra_context,
                     ),
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_PROMPT,
                         max_output_tokens=2048,
                         response_mime_type="application/json",
+                        # Desliga o "raciocínio interno" do modelo: para essa
+                        # tarefa simples, ele consumia tokens pensando e não
+                        # sobrava espaço para escrever o JSON de resposta.
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),
                 )
 
@@ -119,6 +142,11 @@ Código:
                 print("\n========== RESPOSTA RAW DO GEMINI ==========")
                 print(repr(raw_text))
                 print("============================================\n")
+
+                if not raw_text.strip():
+                    raise ValueError(
+                        "Resposta vazia da IA (possível corte por limite de tokens)"
+                    )
 
                 return self._parse_response(raw_text)
 
@@ -149,7 +177,7 @@ Código:
                         )
                         time.sleep(wait_time)
                         continue
-                    
+
                     print(
                         "[LLM] Limite da API atingido. "
                         "Não foi possível realizar a análise."
@@ -168,7 +196,7 @@ Código:
                         )
                         time.sleep(wait_time)
                         continue
-                    
+
                     break
 
                 # ----------------------------------------

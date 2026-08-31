@@ -46,6 +46,24 @@ class GitHubClient:
         import base64
         return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
 
+    def get_repo_tree(self, owner: str, repo: str, ref: str) -> list[dict]:
+        """
+        Lista todos os arquivos do repositório em um determinado commit/branch,
+        de forma recursiva (inclui subpastas). Usado para localizar arquivos
+        de teste já existentes no projeto.
+
+        Cada item retornado tem, entre outros campos: path, type ("blob" para
+        arquivo ou "tree" para pasta).
+        """
+        url = f"{self.base_url}/repos/{owner}/{repo}/git/trees/{ref}"
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                url, headers=self._headers(), params={"recursive": "1"}
+            )
+            response.raise_for_status()
+            data = response.json()
+        return data.get("tree", [])
+
     def post_comment(
         self, owner: str, repo: str, pr_number: int, body: str
     ) -> dict:

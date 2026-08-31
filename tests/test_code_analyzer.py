@@ -1,4 +1,4 @@
-from app.code_analyzer import CodeAnalyzer
+from app.code_analyzer import CodeAnalyzer, build_dependency_context
 
 
 SAMPLE_CODE = '''
@@ -60,3 +60,53 @@ def test_summarize_aggregates_metrics():
 
     assert summary["total_functions"] == 2
     assert summary["functions_without_try_except"] == 1
+
+
+DEPENDENCY_CODE = '''
+def validar_email(email):
+    return "@" in email
+
+
+def cadastrar_usuario(nome, email):
+    if not validar_email(email):
+        raise ValueError("Email inválido")
+    return {"nome": nome, "email": email}
+'''
+
+
+def test_called_names_identifies_function_calls():
+    analyzer = CodeAnalyzer()
+    functions = analyzer.analyze_source(DEPENDENCY_CODE)
+    cadastrar = next(f for f in functions if f.name == "cadastrar_usuario")
+
+    assert "validar_email" in cadastrar.called_names
+
+
+def test_called_names_ignores_direct_recursion():
+    code = "def fatorial(n):\n    return 1 if n == 0 else n * fatorial(n - 1)"
+    analyzer = CodeAnalyzer()
+    functions = analyzer.analyze_source(code)
+    fatorial = functions[0]
+
+    assert "fatorial" not in fatorial.called_names
+
+
+def test_build_dependency_context_includes_called_function_source():
+    analyzer = CodeAnalyzer()
+    functions = analyzer.analyze_source(DEPENDENCY_CODE)
+    cadastrar = next(f for f in functions if f.name == "cadastrar_usuario")
+
+    context = build_dependency_context(cadastrar, functions)
+
+    assert "validar_email" in context
+    assert '"@" in email' in context
+
+
+def test_build_dependency_context_empty_when_no_dependencies():
+    analyzer = CodeAnalyzer()
+    functions = analyzer.analyze_source(SAMPLE_CODE)
+    simple_add = next(f for f in functions if f.name == "simple_add")
+
+    context = build_dependency_context(simple_add, functions)
+
+    assert context == ""
