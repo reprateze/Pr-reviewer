@@ -53,11 +53,11 @@ class ContextGatherer:
                 # contexto extra em vez de quebrar a análise inteira.
                 return {}
 
-        test_file_paths = [
+        test_file_paths = list(dict.fromkeys(
             item["path"]
             for item in tree
             if item.get("type") == "blob" and _looks_like_test_file(item["path"])
-        ]
+        ))  # dict.fromkeys remove duplicatas mantendo a ordem original
 
         names_to_check = [function_name] + list(also_check_names or [])
         results: dict[str, list[str]] = {name: [] for name in names_to_check}
@@ -69,7 +69,7 @@ class ContextGatherer:
                 continue
 
             for name in names_to_check:
-                if name in content:
+                if name in content and path not in results[name]:
                     results[name].append(path)
 
         return results

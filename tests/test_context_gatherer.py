@@ -64,6 +64,25 @@ def test_find_related_tests_checks_dependency_names_too():
     assert related["validar_numero"] == ["test_calculadora.py"]
 
 
+def test_find_related_tests_deduplicates_repeated_paths():
+    """
+    Se a árvore do repositório retornar o mesmo caminho mais de uma vez
+    (pode acontecer em certos históricos de commits/merges), o resultado
+    não deve listar o arquivo duplicado.
+    """
+    fake_github = MagicMock()
+    fake_github.get_repo_tree.return_value = [
+        {"path": "test_calculadora.py", "type": "blob"},
+        {"path": "test_calculadora.py", "type": "blob"},  # duplicata proposital
+    ]
+    fake_github.get_file_content.return_value = "def test_somar():\n    assert somar(2, 3) == 5"
+
+    gatherer = ContextGatherer(github_client=fake_github)
+    related = gatherer.find_related_tests("owner", "repo", "main", "somar")
+
+    assert related["somar"] == ["test_calculadora.py"]
+
+
 def test_find_related_tests_reuses_provided_tree():
     """Quando a árvore já é fornecida, get_repo_tree não deve ser chamado de novo."""
     fake_github = MagicMock()
