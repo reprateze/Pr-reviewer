@@ -1,4 +1,5 @@
-from app.main import _build_extra_context, _parse_rating
+from app.code_analyzer import CodeAnalyzer
+from app.main import _build_extra_context, _functions_touched_by_diff, _parse_rating
 
 
 def test_build_extra_context_returns_none_when_no_parts():
@@ -42,3 +43,42 @@ def test_parse_rating_returns_none_when_no_command():
 def test_parse_rating_returns_none_for_empty_body():
     assert _parse_rating("") is None
     assert _parse_rating(None) is None
+
+
+def test_functions_touched_by_diff_ignores_functions_outside_the_diff():
+    """
+    Reproduz o caso real: um PR que só altera uma linha fora de qualquer
+    função (ex: um print solto no nível do módulo) não deve fazer nenhuma
+    função "por acaso presente no arquivo" ser escolhida para análise.
+    """
+    code = '''
+def calcular_porcentagem(valor, percentual):
+    return (valor * percentual) / 100
+
+
+print("linha alterada fora de qualquer função")
+'''
+    functions = CodeAnalyzer().analyze_source(code)
+    # Só a linha 5 (o print) está no diff — nenhuma função foi tocada.
+    commentable = {5}
+
+    assert _functions_touched_by_diff(functions, commentable) == []
+
+
+def test_functions_touched_by_diff_returns_functions_that_overlap_the_diff():
+    code = '''
+def foo():
+    return 1
+
+
+def bar():
+    return 2
+'''
+    functions = CodeAnalyzer().analyze_source(code)
+    bar = next(f for f in functions if f.name == "bar")
+    # Linha dentro do corpo de bar() está no diff.
+    commentable = {bar.start_line}
+
+    result = _functions_touched_by_diff(functions, commentable)
+
+    assert [f.name for f in result] == ["bar"]
