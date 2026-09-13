@@ -10,6 +10,41 @@ RISK_EMOJI = {
     "desconhecido": "⚪",
 }
 
+FEEDBACK_INSTRUCTIONS = (
+    "\n\n_Essa sugestão ajudou? Responda este comentário com `/rate bom` ou "
+    "`/rate ruim` (pode incluir o motivo depois) — isso ajuda a calibrar as "
+    "próximas análises._"
+)
+
+
+def format_single_suggestion_comment(
+    filename: str, function_name: str, analysis: dict
+) -> str:
+    """
+    Corpo de UM comentário de review, ancorado na linha da função alterada.
+    Usado no fluxo principal (um comentário por função, não um bloco só) —
+    ver format_pr_comment() para o formato antigo, usado como fallback
+    quando não é possível ancorar o comentário numa linha do diff.
+    """
+    risk = analysis.get("risk_level", "desconhecido")
+    emoji = RISK_EMOJI.get(risk, "⚪")
+
+    lines = [
+        f"### {emoji} PR Reviewer AI — `{function_name}()`",
+        f"**Risco estimado:** {risk.upper()}  ",
+        f"**Motivo:** {analysis.get('risk_reason', '—')}\n",
+    ]
+
+    tests = analysis.get("suggested_tests", [])
+    if tests:
+        lines.append("**Sugestões de teste:**")
+        for t in tests:
+            lines.append(f"- **{t.get('title', 'Sem título')}** — {t.get('description', '')}")
+    else:
+        lines.append("_Nenhuma sugestão específica gerada para esta função._")
+
+    return "\n".join(lines) + FEEDBACK_INSTRUCTIONS
+
 
 def format_pr_comment(results: list[dict]) -> str:
     """
