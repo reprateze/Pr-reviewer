@@ -69,6 +69,20 @@ def _build_extra_context(parts: list[str], max_chars: int) -> str | None:
     return combined
 
 
+def _functions_touched_by_diff(functions: list, commentable: set[int]) -> list:
+    """
+    Filtra, entre as funções extraídas de um arquivo, só as que têm de fato
+    alguma linha alterada no diff do PR. Sem esse filtro, um PR que só mexe
+    em código fora de função (ex: um print solto no nível do módulo) faria a
+    IA analisar arbitrariamente "a primeira função do arquivo" — que não tem
+    nada a ver com a mudança.
+    """
+    return [
+        f for f in functions
+        if pick_comment_line(f.start_line, f.end_line, commentable) is not None
+    ]
+
+
 def _post_suggestion(
     github: GitHubClient,
     owner: str,
@@ -237,11 +251,13 @@ def review_pull_request(payload: ReviewRequest):
             for f in other_functions
         }
 
+        changed_functions = _functions_touched_by_diff(functions, commentable)
+
         # NOTA: limitado a 1 função por arquivo por enquanto, para economizar
         # a cota gratuita da API (5 req/min, 20 req/dia) durante os testes.
         # Remover o "[:1]" quando estiver pronto para rodar o experimento
         # completo (ou trocar para um plano pago / outra chave).
-        for func in functions[:1]:
+        for func in changed_functions[:1]:
             if func.num_lines > settings.max_diff_lines:
                 continue  # evita mandar funções gigantes para a IA
 
