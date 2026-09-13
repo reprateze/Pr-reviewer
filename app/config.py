@@ -29,5 +29,23 @@ class Settings:
     # Evita mandar diffs gigantes para o modelo
     max_diff_lines: int = 400
 
+    # Tamanho máximo (em caracteres) do bloco de "contexto adicional" (código
+    # de dependências + testes já existentes) enviado no prompt. Com cota
+    # gratuita de tokens/requisições (ex: Gemini Flash free tier), precisamos
+    # de um teto duro pra não estourar o limite mesmo quando a função analisada
+    # tem muitas dependências.
+    max_extra_context_chars: int = int(os.getenv("MAX_EXTRA_CONTEXT_CHARS", "2000"))
+
+    # Onde persistir as sugestões geradas e o feedback dos devs sobre elas.
+    # Por padrão usa SQLite local (zero configuração, ótimo para desenvolver
+    # ou rodar o experimento do TCC sem depender de infra externa). Em
+    # produção, aponte para um Postgres (Render/Supabase) via esta env var.
+    database_url: str = os.getenv("DATABASE_URL", "sqlite:///./data.db")
+
+    # Segredo compartilhado com o GitHub para validar a assinatura
+    # (X-Hub-Signature-256) dos webhooks recebidos em /webhook/github.
+    # Configurado ao criar o webhook em Settings > Webhooks do repositório.
+    github_webhook_secret: str = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+
 
 settings = Settings()

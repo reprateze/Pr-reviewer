@@ -6,23 +6,142 @@ Fluxo:
 2. Busca os arquivos alterados no PR através da API do GitHub.
 3. Para cada arquivo .py alterado, extrai as funções com AST.
 4. Envia cada função relevante para o LLM, que sugere casos de teste.
-5. Formata tudo em Markdown e posta como comentário no PR.
+5. Posta um comentário de review por função, ancorado na linha alterada
+   (quando possível — ver `_post_suggestion`), e registra a sugestão no
+   banco para depois receber feedback do dev via webhook.
 """
-from fastapi import FastAPI, HTTPException
+import hashlib
+import hmac
+import re
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from app.config import settings
 from app.code_analyzer import CodeAnalyzer, build_dependency_context
+from app.diff_utils import commentable_lines, pick_comment_line
 from app.github_client import GitHubClient
 from app.llm_client import LLMClient
 from app.context_gatherer import ContextGatherer
-from app.comment_formatter import format_pr_comment
+from app.comment_formatter import format_pr_comment, format_single_suggestion_comment
+from app.db import (
+    find_suggestion_by_comment_id,
+    get_top_rated_examples,
+    init_db,
+    save_feedback,
+    save_suggestion,
+)
+from app.models import Suggestion
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Cria as tabelas no banco (SQLite local ou Postgres, ver DATABASE_URL)
+    # se ainda não existirem. Idempotente — seguro rodar em todo startup.
+    init_db()
+    yield
+
 
 app = FastAPI(
     title="PR Reviewer AI",
     description="Sugere casos de teste automaticamente em Pull Requests.",
     version="0.1.0",
+    lifespan=lifespan,
 )
+
+
+def _build_extra_context(parts: list[str], max_chars: int) -> str | None:
+    """
+    Junta os blocos de contexto extra (dependências + testes relacionados) e
+    aplica um teto de caracteres. Com cota gratuita de tokens/requisições
+    (ex: Gemini Flash free tier), preferimos truncar a mandar um prompt
+    gigante e estourar o limite.
+    """
+    if not parts:
+        return None
+
+    combined = "\n\n".join(parts)
+    if len(combined) > max_chars:
+        combined = (
+            combined[:max_chars].rstrip()
+            + "\n[...contexto truncado para caber no orçamento de tokens...]"
+        )
+    return combined
+
+
+def _post_suggestion(
+    github: GitHubClient,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    commit_sha: str,
+    filename: str,
+    func,
+    analysis: dict,
+    commentable: set[int],
+) -> int | None:
+    """
+    Tenta postar a sugestão como um comentário de review ancorado na linha
+    alterada da função — isso permite que o dev responda em thread, e é o
+    que possibilita correlacionar feedback com a sugestão exata depois (via
+    webhook, usando in_reply_to_id).
+
+    Sempre registra a sugestão no banco (com ou sem comentário ancorado).
+    Retorna o id do comentário postado no GitHub, ou None quando não foi
+    possível ancorar (função não está de fato no diff) ou a API do GitHub
+    rejeitou o comentário por qualquer motivo — nesses casos quem chamou
+    deve incluir essa sugestão no comentário único de fallback.
+    """
+    comment_id = None
+    line = pick_comment_line(func.start_line, func.end_line, commentable)
+
+    if line is not None:
+        body = format_single_suggestion_comment(filename, func.name, analysis)
+        try:
+            comment = github.post_review_comment(
+                owner, repo, pr_number, commit_sha, filename, line, body
+            )
+            comment_id = comment.get("id")
+        except Exception:
+            comment_id = None  # cai no fallback (comentário único no final)
+
+    save_suggestion(
+        Suggestion(
+            owner=owner,
+            repo=repo,
+            pr_number=pr_number,
+            commit_sha=commit_sha,
+            filename=filename,
+            function_name=func.name,
+            risk_level=analysis.get("risk_level", "desconhecido"),
+            risk_reason=analysis.get("risk_reason", ""),
+            suggested_tests=analysis.get("suggested_tests", []),
+            github_comment_id=comment_id,
+        )
+    )
+
+    return comment_id
+
+
+_RATING_PATTERN = re.compile(
+    r"^/rate\s+(bom|ruim|positivo|negativo|\U0001F44D|\U0001F44E)\b\s*[:\-]?\s*(.*)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_POSITIVE_RATING_WORDS = {"bom", "positivo", "\U0001F44D"}
+
+
+def _parse_rating(body: str) -> tuple[str, str | None] | None:
+    """
+    Procura um comando `/rate bom` ou `/rate ruim` (aceita variações e um
+    motivo opcional depois) no texto de uma reply. Retorna None se não achar.
+    """
+    match = _RATING_PATTERN.search(body or "")
+    if not match:
+        return None
+
+    raw_rating, reason = match.groups()
+    rating = "positivo" if raw_rating.lower() in _POSITIVE_RATING_WORDS else "negativo"
+    return rating, (reason.strip() or None)
 
 
 class ReviewRequest(BaseModel):
@@ -59,7 +178,32 @@ def review_pull_request(payload: ReviewRequest):
     except Exception:
         repo_tree = []
 
-    results = []
+    # Exemplos de sugestões que devs avaliaram como boas (few-shot), usados
+    # pra calibrar o estilo/qualidade esperado das próximas análises — a
+    # forma de "aprendizado" possível sem fine-tuning (fora de alcance no
+    # tier gratuito do Gemini).
+    try:
+        few_shot_examples = [
+            {
+                "function_name": ex.function_name,
+                "risk_level": ex.risk_level,
+                "risk_reason": ex.risk_reason,
+                "suggested_tests": ex.suggested_tests,
+            }
+            for ex in get_top_rated_examples(limit=2)
+        ] or None
+    except Exception:
+        few_shot_examples = None
+
+    fallback_results = []  # sugestões que não puderam ser ancoradas no diff
+    functions_analyzed = 0
+
+    # Primeira passada: baixa e analisa TODOS os arquivos .py relevantes do PR
+    # antes de consultar a IA. Isso permite resolver dependências que atravessam
+    # arquivos (ex: função em utils.py chamada por uma função em main.py) — sem
+    # essa passada só teríamos visibilidade do arquivo sendo processado no momento.
+    files_functions: dict[str, list] = {}
+    files_patches: dict[str, str] = {}
 
     for file_info in pr_files:
         filename = file_info["filename"]
@@ -77,7 +221,21 @@ def review_pull_request(payload: ReviewRequest):
             # Arquivo pode ter sido movido/deletado depois; ignora sem quebrar o fluxo
             continue
 
-        functions = analyzer.analyze_source(content)
+        files_functions[filename] = analyzer.analyze_source(content)
+        files_patches[filename] = file_info.get("patch", "")
+
+    for filename, functions in files_functions.items():
+        commentable = commentable_lines(files_patches.get(filename))
+        # Funções de outros arquivos alterados no mesmo PR, indexadas por nome,
+        # para resolver dependências que a função atual chama mas que não estão
+        # definidas neste arquivo. Em caso de nomes duplicados entre arquivos,
+        # a última ocorrência processada "vence" — aceitável para o MVP.
+        external_functions = {
+            f.name: f
+            for other_filename, other_functions in files_functions.items()
+            if other_filename != filename
+            for f in other_functions
+        }
 
         # NOTA: limitado a 1 função por arquivo por enquanto, para economizar
         # a cota gratuita da API (5 req/min, 20 req/dia) durante os testes.
@@ -109,11 +267,13 @@ def review_pull_request(payload: ReviewRequest):
             except Exception:
                 tests_summary = None
 
-            # Contexto de dependências: código de outras funções do mesmo
-            # arquivo que esta função chama (ex: validar_email() dentro de
-            # cadastrar_usuario()). Ajuda a IA a entender o comportamento
+            # Contexto de dependências: código de outras funções (do mesmo
+            # arquivo, ou só a assinatura se forem de outro arquivo do PR) que
+            # esta função chama. Ajuda a IA a entender o comportamento
             # completo, não só um pedaço isolado.
-            dependency_context = build_dependency_context(func, functions)
+            dependency_context = build_dependency_context(
+                func, functions, external_functions=external_functions
+            )
 
             context_parts = []
             if dependency_context:
@@ -123,11 +283,16 @@ def review_pull_request(payload: ReviewRequest):
             if tests_summary:
                 context_parts.append(tests_summary)
 
-            extra_context = "\n\n".join(context_parts) if context_parts else None
+            extra_context = _build_extra_context(
+                context_parts, settings.max_extra_context_chars
+            )
 
             try:
                 analysis = llm.suggest_tests_for_function(
-                    func, filename, extra_context=extra_context
+                    func,
+                    filename,
+                    extra_context=extra_context,
+                    few_shot_examples=few_shot_examples,
                 )
             except Exception as exc:
                 analysis = {
@@ -136,23 +301,96 @@ def review_pull_request(payload: ReviewRequest):
                     "suggested_tests": [],
                 }
 
-            results.append(
-                {
-                    "filename": filename,
-                    "function_name": func.name,
-                    "analysis": analysis,
-                }
+            functions_analyzed += 1
+
+            comment_id = _post_suggestion(
+                github,
+                payload.owner,
+                payload.repo,
+                payload.pr_number,
+                payload.head_ref,
+                filename,
+                func,
+                analysis,
+                commentable,
             )
+            if comment_id is None:
+                fallback_results.append(
+                    {
+                        "filename": filename,
+                        "function_name": func.name,
+                        "analysis": analysis,
+                    }
+                )
 
-    comment_body = format_pr_comment(results)
-
-    try:
-        github.post_comment(payload.owner, payload.repo, payload.pr_number, comment_body)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Erro ao postar comentário no PR: {exc}")
+    # Sugestões que não puderam ser ancoradas numa linha do diff (ou que a
+    # API do GitHub rejeitou) caem aqui, agrupadas num único comentário geral
+    # — igual ao comportamento original, usado como fallback.
+    comment_preview = None
+    if fallback_results or functions_analyzed == 0:
+        comment_preview = format_pr_comment(fallback_results)
+        try:
+            github.post_comment(
+                payload.owner, payload.repo, payload.pr_number, comment_preview
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Erro ao postar comentário no PR: {exc}"
+            )
 
     return {
         "status": "success",
-        "functions_analyzed": len(results),
-        "comment_preview": comment_body,
+        "functions_analyzed": functions_analyzed,
+        "functions_with_inline_comment": functions_analyzed - len(fallback_results),
+        "comment_preview": comment_preview,
     }
+
+
+@app.post("/webhook/github")
+async def github_webhook(request: Request):
+    """
+    Recebe eventos de webhook do GitHub. Hoje só é usado para capturar
+    feedback: quando o dev responde (reply em thread) a um comentário de
+    review da IA com "/rate bom" ou "/rate ruim", correlacionamos com a
+    sugestão original via `in_reply_to_id` e registramos no banco.
+
+    Configuração necessária no repositório (Settings > Webhooks):
+    - Payload URL: <URL desta API>/webhook/github
+    - Content type: application/json
+    - Secret: o mesmo valor configurado em GITHUB_WEBHOOK_SECRET
+    - Eventos: apenas "Pull request review comments"
+    """
+    raw_body = await request.body()
+
+    if settings.github_webhook_secret:
+        signature = request.headers.get("X-Hub-Signature-256", "")
+        expected = "sha256=" + hmac.new(
+            settings.github_webhook_secret.encode(), raw_body, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise HTTPException(status_code=401, detail="Assinatura do webhook inválida")
+
+    if request.headers.get("X-GitHub-Event") != "pull_request_review_comment":
+        return {"status": "ignored", "reason": "evento não tratado"}
+
+    payload = await request.json()
+    if payload.get("action") != "created":
+        return {"status": "ignored", "reason": "não é um comentário novo"}
+
+    comment = payload.get("comment", {})
+    in_reply_to_id = comment.get("in_reply_to_id")
+    if in_reply_to_id is None:
+        return {"status": "ignored", "reason": "não é uma resposta a outro comentário"}
+
+    parsed = _parse_rating(comment.get("body", ""))
+    if parsed is None:
+        return {"status": "ignored", "reason": "reply não contém um comando /rate"}
+
+    rating, reason = parsed
+
+    suggestion = find_suggestion_by_comment_id(in_reply_to_id)
+    if suggestion is None:
+        return {"status": "ignored", "reason": "comentário original não encontrado no banco"}
+
+    save_feedback(suggestion.id, rating=rating, reason=reason)
+    return {"status": "ok", "suggestion_id": suggestion.id, "rating": rating}

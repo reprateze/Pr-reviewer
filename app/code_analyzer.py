@@ -103,29 +103,58 @@ class CodeAnalyzer:
         }
 
 
+def format_function_signature(func: FunctionInfo) -> str:
+    """
+    Monta só a assinatura + docstring de uma função, sem o corpo. Usado para
+    dar contexto de dependências definidas em OUTROS arquivos do PR sem pagar
+    o custo (em tokens) de mandar o código inteiro delas.
+    """
+    header = f"def {func.name}({', '.join(func.args)}):"
+    if func.docstring:
+        return f'{header}\n    """{func.docstring}"""'
+    return header
+
+
 def build_dependency_context(
-    target: FunctionInfo, all_functions: list[FunctionInfo], max_deps: int = 3
+    target: FunctionInfo,
+    all_functions: list[FunctionInfo],
+    external_functions: dict[str, FunctionInfo] | None = None,
+    max_deps: int = 3,
 ) -> str:
     """
-    Monta um bloco de texto com o código de outras funções, definidas no
-    mesmo arquivo, que a função alvo chama. Isso dá à IA visibilidade sobre
-    o comportamento das dependências, não só da função isolada.
+    Monta um bloco de texto com o código de outras funções que a função alvo
+    chama, para dar à IA visibilidade sobre o comportamento das dependências,
+    não só da função isolada.
 
-    Limita a `max_deps` funções para não estourar o tamanho do prompt.
+    - Dependências no MESMO arquivo (`all_functions`): manda o código completo.
+    - Dependências de OUTROS arquivos alterados no mesmo PR
+      (`external_functions`, um mapa {nome: FunctionInfo}): manda só a
+      assinatura + docstring, bem mais barato em tokens do que o corpo inteiro.
+
+    Limita a `max_deps` funções (somando as duas fontes) para não estourar o
+    orçamento de contexto do prompt.
     """
     by_name = {f.name: f for f in all_functions}
-    dependencies = [
-        by_name[name]
-        for name in target.called_names
-        if name in by_name and name != target.name
-    ][:max_deps]
+    external_functions = external_functions or {}
 
-    if not dependencies:
-        return ""
+    dependency_names = [
+        name for name in dict.fromkeys(target.called_names) if name != target.name
+    ]
 
     blocks = []
-    for dep in dependencies:
-        blocks.append(f"# Função auxiliar: {dep.name}()\n{dep.source}")
+    for name in dependency_names:
+        if len(blocks) >= max_deps:
+            break
+        if name in by_name:
+            dep = by_name[name]
+            blocks.append(f"# Função auxiliar: {dep.name}()\n{dep.source}")
+        elif name in external_functions:
+            dep = external_functions[name]
+            blocks.append(
+                f"# Função auxiliar (definida em outro arquivo do PR, só "
+                f"assinatura para economizar tokens): {dep.name}()\n"
+                f"{format_function_signature(dep)}"
+            )
 
     return "\n\n".join(blocks)
 

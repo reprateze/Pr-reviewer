@@ -110,3 +110,64 @@ def test_build_dependency_context_empty_when_no_dependencies():
     context = build_dependency_context(simple_add, functions)
 
     assert context == ""
+
+
+def test_build_dependency_context_uses_signature_only_for_external_function():
+    """
+    Dependência de OUTRO arquivo do PR: só assinatura + docstring, não o
+    corpo inteiro (economiza tokens comparado a uma dependência local).
+    """
+    analyzer = CodeAnalyzer()
+    functions = analyzer.analyze_source(DEPENDENCY_CODE)
+    cadastrar = next(f for f in functions if f.name == "cadastrar_usuario")
+
+    external_code = '''
+def validar_email(email):
+    """Confere se o email tem @."""
+    return "@" in email
+'''
+    external_functions = {
+        f.name: f for f in analyzer.analyze_source(external_code)
+    }
+
+    # Remove a versão local de validar_email para simular que ela só existe
+    # em outro arquivo do PR.
+    local_functions = [f for f in functions if f.name != "validar_email"]
+
+    context = build_dependency_context(
+        cadastrar, local_functions, external_functions=external_functions
+    )
+
+    assert "def validar_email(email):" in context
+    assert "Confere se o email tem @." in context
+    # Corpo da função não deve aparecer, só a assinatura/docstring
+    assert '"@" in email' not in context
+
+
+def test_build_dependency_context_respects_max_deps_across_sources():
+    code = '''
+def a():
+    return 1
+
+
+def b():
+    return 2
+
+
+def alvo():
+    return a() + b() + c() + d()
+'''
+    analyzer = CodeAnalyzer()
+    functions = analyzer.analyze_source(code)
+    alvo = next(f for f in functions if f.name == "alvo")
+
+    external_functions = {
+        f.name: f for f in analyzer.analyze_source("def c():\n    return 3\n\n\ndef d():\n    return 4")
+    }
+
+    context = build_dependency_context(
+        alvo, functions, external_functions=external_functions, max_deps=2
+    )
+
+    found = sum(name in context for name in ["a()", "b()", "c()", "d()"])
+    assert found == 2

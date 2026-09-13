@@ -7,6 +7,7 @@ requisições (rate limiting) porque o nível gratuito do Gemini tem um
 limite baixo de chamadas por minuto e por dia.
 """
 import json
+import re
 import time
 
 from google import genai
@@ -16,12 +17,41 @@ from app.config import settings
 from app.code_analyzer import FunctionInfo
 
 
+# Cobre a maioria dos emojis comuns (pictogramas, símbolos, dingbats, bandeiras
+# e o seletor de variação que às vezes vem grudado neles). O Gemini às vezes
+# solta emoji em campos de texto mesmo sem o prompt pedir — isso limpa depois
+# da resposta, sem depender só de instrução no prompt.
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000026FF"
+    "\U00002700-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "️"
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def _strip_emojis(value):
+    """Remove emojis recursivamente de strings, listas e dicts."""
+    if isinstance(value, str):
+        return _EMOJI_PATTERN.sub("", value).strip()
+    if isinstance(value, list):
+        return [_strip_emojis(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_emojis(v) for k, v in value.items()}
+    return value
+
+
 SYSTEM_PROMPT = """Você é um assistente de QA especializado em revisão de código.
 Dado o código de uma função alterada em um Pull Request, sua tarefa é:
 
 1. Identificar se a função parece ter cobertura de teste adequada.
 2. Sugerir de 1 a 4 casos de teste relevantes (incluindo cenários de erro/borda).
 3. Apontar riscos específicos (ex: falta de tratamento de exceção, complexidade alta).
+
+Não use emojis em nenhum campo de texto da resposta.
 
 Você pode receber um "Contexto adicional" com duas informações extras:
 - O código de funções auxiliares chamadas pela função analisada (dependências),
@@ -80,14 +110,40 @@ class LLMClient:
 
         self.last_request_time = time.time()
 
+    def _format_few_shot_examples(self, examples: list[dict]) -> str:
+        """Formata sugestões passadas bem avaliadas pelos devs, usadas como
+        referência de estilo/qualidade esperado (few-shot)."""
+        blocks = []
+        for ex in examples:
+            tests = "\n".join(
+                f"  - {t.get('title', '')}: {t.get('description', '')}"
+                for t in ex.get("suggested_tests", [])
+            ) or "  - (sem testes sugeridos)"
+            blocks.append(
+                f"Função: {ex.get('function_name', '?')}\n"
+                f"Risco: {ex.get('risk_level', '?')} — {ex.get('risk_reason', '')}\n"
+                f"Testes sugeridos:\n{tests}"
+            )
+        return "\n\n".join(blocks)
+
     def _build_user_prompt(
         self,
         function: FunctionInfo,
         filename: str,
         extra_context: str | None = None,
+        few_shot_examples: list[dict] | None = None,
     ) -> str:
         context_block = f"\nContexto adicional: {extra_context}\n" if extra_context else ""
-        return f"""Arquivo: {filename}
+
+        few_shot_block = ""
+        if few_shot_examples:
+            few_shot_block = (
+                "\nExemplos de análises anteriores que devs avaliaram como boas "
+                "(use como referência de estilo e profundidade, não copie o "
+                f"conteúdo):\n{self._format_few_shot_examples(few_shot_examples)}\n"
+            )
+
+        return f"""{few_shot_block}Arquivo: {filename}
 Função: {function.name}
 Linhas: {function.num_lines}
 Complexidade aproximada (nº de branches): {function.num_branches}
@@ -105,6 +161,7 @@ Código:
         filename: str,
         max_retries: int = 2,
         extra_context: str | None = None,
+        few_shot_examples: list[dict] | None = None,
     ) -> dict:
 
         last_error: Exception | None = None
@@ -127,6 +184,7 @@ Código:
                         function,
                         filename,
                         extra_context,
+                        few_shot_examples,
                     ),
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_PROMPT,
@@ -226,7 +284,7 @@ Código:
 
         # Tentativa 1: JSON puro
         try:
-            return json.loads(cleaned)
+            return _strip_emojis(json.loads(cleaned))
         except json.JSONDecodeError:
             pass
 
@@ -236,7 +294,7 @@ Código:
 
         if start != -1 and end != -1 and end > start:
             try:
-                return json.loads(cleaned[start:end + 1])
+                return _strip_emojis(json.loads(cleaned[start:end + 1]))
             except json.JSONDecodeError:
                 pass
 

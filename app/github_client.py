@@ -75,3 +75,37 @@ class GitHubClient:
             )
             response.raise_for_status()
             return response.json()
+
+    def post_review_comment(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        commit_id: str,
+        path: str,
+        line: int,
+        body: str,
+    ) -> dict:
+        """
+        Posta um comentário de review ancorado numa linha específica do diff
+        (aparece inline na aba "Files changed", como um comentário de revisão
+        humano de verdade). Diferente de `post_comment`, esse tipo de
+        comentário aceita reply em thread pelo dev — o que permite, via
+        webhook, correlacionar o feedback com a sugestão exata que o gerou.
+
+        `line` precisa ser uma linha que faça parte do diff desse arquivo
+        nesse commit (ver app/diff_utils.py); caso contrário a API do GitHub
+        responde 422.
+        """
+        url = f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}/comments"
+        payload = {
+            "body": body,
+            "commit_id": commit_id,
+            "path": path,
+            "line": line,
+            "side": "RIGHT",
+        }
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(url, headers=self._headers(), json=payload)
+            response.raise_for_status()
+            return response.json()
