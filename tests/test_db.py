@@ -41,6 +41,29 @@ def test_save_and_find_suggestion_by_comment_id(tmp_path, monkeypatch):
     assert found.suggested_tests == [{"title": "Caso feliz", "description": "..."}]
 
 
+def test_save_suggestion_accepts_comment_ids_beyond_32_bit_range(tmp_path, monkeypatch):
+    """
+    Regressão: github_comment_id precisa ser BigInteger, não o Integer (int4)
+    padrão — ids de comentário do GitHub já passam de 4 bilhões, muito além
+    do limite de ~2.1 bilhões do int4. Em Postgres isso quebrava o INSERT
+    (silenciosamente, sem essa cobertura de teste); no SQLite (usado aqui)
+    não quebraria mesmo com o tipo errado, mas o teste documenta o contrato.
+    """
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    big_id = 4_000_087_333  # maior que 2**31 - 1 (limite do int4)
+    suggestion = db.save_suggestion(
+        Suggestion(
+            owner="o", repo="r", pr_number=1, commit_sha="a",
+            filename="a.py", function_name="foo", risk_level="alto",
+            risk_reason="-", github_comment_id=big_id,
+        )
+    )
+
+    assert suggestion.github_comment_id == big_id
+    assert db.find_suggestion_by_comment_id(big_id) is not None
+
+
 def test_find_suggestion_by_comment_id_returns_none_when_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
 

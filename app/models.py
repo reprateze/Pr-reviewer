@@ -7,7 +7,7 @@ Funciona tanto em SQLite (dev local / experimento do TCC) quanto em Postgres
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, BigInteger, Column
 from sqlmodel import Field, SQLModel
 
 
@@ -41,7 +41,12 @@ class Suggestion(SQLModel, table=True):
     # ser ancorado numa linha do diff e a sugestão caiu no fallback de
     # comentário único (ver main.py) — nesse caso não há como capturar feedback
     # em thread para essa sugestão específica.
-    github_comment_id: int | None = Field(default=None, index=True)
+    #
+    # BigInteger (não o Integer/int4 padrão): os ids de comentário do GitHub
+    # já passam de 4 bilhões, muito além do limite de ~2.1 bilhões do int4.
+    github_comment_id: int | None = Field(
+        default=None, sa_column=Column(BigInteger, index=True)
+    )
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

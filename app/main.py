@@ -119,20 +119,27 @@ def _post_suggestion(
         except Exception:
             comment_id = None  # cai no fallback (comentário único no final)
 
-    save_suggestion(
-        Suggestion(
-            owner=owner,
-            repo=repo,
-            pr_number=pr_number,
-            commit_sha=commit_sha,
-            filename=filename,
-            function_name=func.name,
-            risk_level=analysis.get("risk_level", "desconhecido"),
-            risk_reason=analysis.get("risk_reason", ""),
-            suggested_tests=analysis.get("suggested_tests", []),
-            github_comment_id=comment_id,
+    try:
+        save_suggestion(
+            Suggestion(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                commit_sha=commit_sha,
+                filename=filename,
+                function_name=func.name,
+                risk_level=analysis.get("risk_level", "desconhecido"),
+                risk_reason=analysis.get("risk_reason", ""),
+                suggested_tests=analysis.get("suggested_tests", []),
+                github_comment_id=comment_id,
+            )
         )
-    )
+    except Exception:
+        # Falha ao persistir não pode derrubar a análise inteira — o
+        # comentário (se houver) já foi postado no GitHub nesse ponto. Sem
+        # o registro no banco, essa sugestão específica só fica sem feedback
+        # rastreável depois, mas o PR não fica sem review por causa disso.
+        pass
 
     return comment_id
 
