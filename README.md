@@ -1,146 +1,582 @@
 # PR Reviewer AI
 
-Ferramenta que se integra ao GitHub e, automaticamente, analisa Pull Requests
-para sugerir casos de teste e apontar riscos em funções alteradas.
+![Python](https://img.shields.io/badge/Python-3.x-blue?logo=python)
+![FastAPI](https://img.shields.io/badge/FastAPI-API-green?logo=fastapi)
+![Pytest](https://img.shields.io/badge/Pytest-Testing-orange?logo=pytest)
+![GitHub Actions](https://img.shields.io/badge/GitHub-Actions-black?logo=githubactions)
+![Gemini](https://img.shields.io/badge/Google-Gemini-blue)
 
-## Como funciona
+AI-powered tool that automatically analyzes Pull Requests on GitHub and provides test suggestions and risk analysis for modified Python code.
 
-1. Um Pull Request é aberto ou atualizado.
-2. Uma GitHub Action dispara uma chamada para esta API.
-3. A API busca os arquivos alterados do PR (via API do GitHub).
-4. Cada arquivo `.py` alterado é analisado com AST para extrair as funções.
-5. Cada função relevante é enviada para um LLM (com contexto de dependências
-   — inclusive de outros arquivos do PR — e de testes já existentes), que
-   sugere casos de teste e aponta riscos.
-6. Um comentário de review é postado **ancorado na linha alterada** de cada
-   função (como um revisor humano faria), para permitir reply em thread.
-   Quando isso não é possível, a sugestão cai num comentário único de
-   fallback no final do PR.
-7. O dev pode responder qualquer comentário da IA com `/rate bom` ou
-   `/rate ruim` — um webhook captura essa resposta e guarda o feedback no
-   banco, que depois é usado como exemplo (few-shot) em análises futuras.
+The project combines static code analysis, Large Language Models, GitHub API integration, automated workflows, and developer feedback to assist the code review process from a QA perspective.
 
-## Estrutura do projeto
+## Overview
 
+PR Reviewer AI is designed to act as an additional layer of analysis during the Pull Request lifecycle.
+
+When a Pull Request is opened or updated, GitHub Actions triggers the application, which analyzes the modified Python code and sends relevant functions to an LLM along with additional context.
+
+The AI then generates suggestions such as:
+
+* Potential test scenarios
+* Risk identification
+* Edge cases
+* Validation opportunities
+* Areas that may require additional testing
+
+The generated suggestions are automatically posted as GitHub Pull Request review comments.
+
+## How It Works
+
+```text
+Pull Request
+     |
+     v
+GitHub Actions
+     |
+     v
+FastAPI
+     |
+     v
+GitHub API
+     |
+     v
+Changed Python Files
+     |
+     v
+AST Code Analysis
+     |
+     v
+Context Gathering
+     |
+     v
+LLM / Gemini
+     |
+     v
+Test Suggestions
+     |
+     v
+GitHub Review Comment
+     |
+     v
+Developer Feedback
+     |
+     v
+Database
+     |
+     v
+Few-shot Examples
 ```
+
+## Key Features
+
+### Automated Pull Request Analysis
+
+The GitHub Actions workflow automatically triggers the review when a Pull Request is:
+
+* Opened
+* Updated
+* Reopened
+
+The workflow sends the Pull Request information to the PR Reviewer API.
+
+### Static Code Analysis
+
+Modified Python files are analyzed using Python's AST module.
+
+The analyzer extracts relevant functions from the changed files before sending them to the LLM.
+
+This allows the application to focus the AI analysis on specific code changes instead of sending the entire repository.
+
+### Context-Aware Analysis
+
+The application gathers additional context before requesting an AI review.
+
+The context can include:
+
+* Modified functions
+* Dependencies from other files
+* Existing tests
+* Pull Request changes
+
+This provides the LLM with more information about how the modified code interacts with the rest of the project.
+
+### AI-Generated Test Suggestions
+
+The LLM analyzes the selected functions and generates testing suggestions based on the implementation and available context.
+
+The goal is not to replace automated tests, but to help identify scenarios that may otherwise be overlooked during development.
+
+### GitHub Review Comments
+
+Suggestions are posted directly to the Pull Request.
+
+Whenever possible, the application anchors the comment to the relevant changed line.
+
+```text
+Pull Request
+      |
+      +-- Modified function
+      |
+      +-- AI suggestion
+      |
+      +-- Review comment
+      |
+      +-- Developer response
+```
+
+If a suggestion cannot be associated with a specific changed line, the application uses a fallback comment at the end of the Pull Request.
+
+### Developer Feedback
+
+Developers can evaluate AI suggestions directly through Pull Request review comments.
+
+Supported commands:
+
+```text
+/rate bom
+/rate ruim
+```
+
+An optional reason can also be provided.
+
+Example:
+
+```text
+/rate bom A validação sugerida cobre um cenário importante.
+```
+
+The webhook receives the response and associates the feedback with the original AI suggestion.
+
+### Feedback-Based Improvement
+
+Suggestions rated as good are stored in the database and can be reused as few-shot examples in future analyses.
+
+```text
+AI Suggestion
+      |
+      v
+Developer Feedback
+      |
+      v
+Database
+      |
+      v
+Approved Examples
+      |
+      v
+Future AI Analysis
+```
+
+This allows the system to improve the relevance of future suggestions without requiring model fine-tuning.
+
+## Technologies
+
+* Python
+* FastAPI
+* Pytest
+* Google Gemini
+* GitHub REST API
+* GitHub Actions
+* SQLModel
+* SQLite
+* PostgreSQL
+* Pydantic
+* HTTPX
+* Python AST
+
+## Project Structure
+
+```text
 pr-reviewer-ai/
+│
 ├── app/
-│   ├── main.py              # API FastAPI (/review e /webhook/github)
-│   ├── code_analyzer.py     # Análise estática com AST
-│   ├── diff_utils.py        # Resolve em quais linhas dá pra ancorar comentário
-│   ├── llm_client.py        # Chamadas ao modelo de linguagem
-│   ├── github_client.py     # Chamadas à API do GitHub
-│   ├── context_gatherer.py  # Busca testes já existentes no repositório
-│   ├── comment_formatter.py # Monta o Markdown dos comentários
-│   ├── db.py                # Conexão e acesso ao banco (SQLModel)
-│   ├── models.py            # Modelo Suggestion (sugestão + feedback)
-│   └── config.py            # Variáveis de ambiente
+│   ├── main.py
+│   ├── code_analyzer.py
+│   ├── comment_formatter.py
+│   ├── config.py
+│   ├── context_gatherer.py
+│   ├── db.py
+│   ├── diff_utils.py
+│   ├── github_client.py
+│   ├── llm_client.py
+│   └── models.py
+│
 ├── tests/
-├── .github/workflows/
-│   └── pr-review.yml        # Workflow que dispara a análise
+│   ├── test_code_analyzer.py
+│   ├── test_comment_formatter.py
+│   ├── test_context_gatherer.py
+│   ├── test_db.py
+│   ├── test_diff_utils.py
+│   ├── test_llm_client.py
+│   └── test_main.py
+│
+├── .github/
+│   └── workflows/
+│       └── pr-review.yml
+│
+├── .env.example
+├── .gitignore
 ├── requirements.txt
-└── .env.example
+└── README.md
 ```
 
-## Feedback e aprendizado com o tempo
+## Backend
 
-Cada sugestão é postada como um comentário de review ancorado na linha
-alterada (não um bloco único) — isso permite que o dev **responda em
-thread** avaliando a sugestão:
+The backend is built with FastAPI and is responsible for orchestrating the entire review process.
 
+Main responsibilities:
+
+* Receive Pull Request review requests
+* Communicate with the GitHub API
+* Retrieve modified files
+* Analyze Python code using AST
+* Gather repository context
+* Send analysis requests to the LLM
+* Format AI suggestions
+* Create GitHub review comments
+* Receive developer feedback through the webhook
+* Store suggestions and feedback
+* Retrieve approved examples for future analyses
+
+## API Endpoints
+
+### Review Pull Request
+
+```http
+POST /review
 ```
-/rate bom    # ou /rate ruim, ambos aceitam um motivo opcional depois
+
+Example:
+
+```json
+{
+  "owner": "github-user",
+  "repo": "repository",
+  "pr_number": 1,
+  "head_ref": "commit-sha"
+}
 ```
 
-Um webhook (`POST /webhook/github`) recebe essa resposta, identifica de qual
-sugestão se trata (via `in_reply_to_id`, que aponta para o comentário
-original) e grava o rating no banco. As sugestões marcadas como "bom" são
-reaproveitadas como exemplos (few-shot) nas próximas análises — uma forma de
-calibrar a qualidade das sugestões com o tempo sem precisar de fine-tuning
-(inviável no tier gratuito do Gemini).
+The endpoint starts the analysis process for the specified Pull Request.
 
-Para habilitar isso no repositório onde a ferramenta atua:
-`Settings > Webhooks > Add webhook`, com:
-- **Payload URL:** `<URL do deploy>/webhook/github`
-- **Content type:** `application/json`
-- **Secret:** o mesmo valor de `GITHUB_WEBHOOK_SECRET` configurado na API
-- **Eventos:** apenas "Pull request review comments"
+### GitHub Webhook
 
-Quando a linha alterada de uma função não pode ser localizada no diff (ou a
-API do GitHub rejeita o comentário por qualquer motivo), a sugestão cai
-automaticamente num comentário único no final do PR — sem thread, então sem
-feedback rastreável para ela, mas a análise não se perde.
+```http
+POST /webhook/github
+```
 
-## Rodando localmente
+The endpoint receives GitHub webhook events containing developer responses to AI review comments.
+
+The feedback is used to associate ratings with previously generated suggestions.
+
+## GitHub Actions
+
+The project includes a GitHub Actions workflow responsible for triggering the review process.
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+```
+
+When one of these events occurs, GitHub Actions sends a request to the deployed PR Reviewer API.
+
+```text
+Pull Request opened/updated
+          |
+          v
+GitHub Actions
+          |
+          v
+POST /review
+          |
+          v
+PR Reviewer AI
+```
+
+## Environment Variables
+
+Create a `.env` file based on `.env.example`.
+
+The application requires configuration for GitHub authentication, the LLM provider, database connection, and webhook security.
+
+Example:
+
+```env
+GITHUB_TOKEN=your_github_token
+LLM_API_KEY=your_llm_api_key
+DATABASE_URL=sqlite:///./reviewer.db
+GITHUB_WEBHOOK_SECRET=your_webhook_secret
+```
+
+Do not commit API keys, tokens, secrets, or credentials to the repository.
+
+## Setup
+
+Clone the repository:
 
 ```bash
-# 1. Criar e ativar um ambiente virtual (opcional, mas recomendado)
+git clone https://github.com/reprateze/Pr-reviewer.git
+cd Pr-reviewer
+```
+
+Create a virtual environment:
+
+```bash
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+```
 
-# 2. Instalar dependências
+Activate the environment.
+
+Linux/macOS:
+
+```bash
+source venv/bin/activate
+```
+
+Windows:
+
+```bash
+venv\Scripts\activate
+```
+
+Install the dependencies:
+
+```bash
 pip install -r requirements.txt
+```
 
-# 3. Configurar variáveis de ambiente
+Configure the environment variables:
+
+```bash
 cp .env.example .env
-# edite o .env e preencha GITHUB_TOKEN e LLM_API_KEY
+```
 
-# 4. Rodar a API
+Edit `.env` with the required credentials.
+
+## Running the API
+
+Start the FastAPI application:
+
+```bash
 uvicorn app.main:app --reload
+```
 
-# 5. Rodar os testes
+The API will be available at:
+
+```text
+http://localhost:8000
+```
+
+FastAPI automatically provides interactive API documentation at:
+
+```text
+http://localhost:8000/docs
+```
+
+## Running Tests
+
+Run the complete test suite:
+
+```bash
 pytest tests/ -v
 ```
 
-A API sobe em `http://localhost:8000`. Documentação automática (Swagger) em
-`http://localhost:8000/docs`.
+The project includes automated tests covering the main application components:
 
-## Testando o endpoint manualmente
+* Code analysis
+* Diff processing
+* Context gathering
+* Comment formatting
+* Database operations
+* LLM client
+* API endpoints
 
-```bash
-curl -X POST http://localhost:8000/review \
-  -H "Content-Type: application/json" \
-  -d '{
-    "owner": "seu-usuario",
-    "repo": "seu-repositorio",
-    "pr_number": 1,
-    "head_ref": "nome-da-branch-ou-sha"
-  }'
+## Testing Architecture
+
+The automated tests are organized by application responsibility.
+
+```text
+tests/
+    |
+    +-- Code Analyzer
+    |
+    +-- Diff Utils
+    |
+    +-- Context Gatherer
+    |
+    +-- Comment Formatter
+    |
+    +-- Database
+    |
+    +-- LLM Client
+    |
+    +-- API
 ```
 
-## Configurando no GitHub Actions
+This structure allows individual components to be validated independently.
 
-1. Faça o deploy da API em algum lugar acessível publicamente (Render,
-   Railway, Fly.io, ou um servidor próprio).
-2. No repositório onde a ferramenta vai atuar, vá em
-   `Settings > Secrets and variables > Actions` e crie o secret
-   `REVIEWER_API_URL` apontando para a URL do deploy.
-3. Copie o arquivo `.github/workflows/pr-review.yml` para esse repositório.
-4. Configure `GITHUB_TOKEN`, `LLM_API_KEY`, `DATABASE_URL` (Postgres em
-   produção — sem isso usa SQLite local, que não persiste entre deploys no
-   Render) e `GITHUB_WEBHOOK_SECRET` como variáveis de ambiente no serviço
-   onde a API está rodando (não no workflow).
-5. Se quiser o fluxo de feedback (`/rate bom`/`/rate ruim`), configure o
-   webhook no repositório — ver seção "Feedback e aprendizado com o tempo".
+## GitHub Webhook Configuration
 
-## Próximos passos (MVP em progresso)
+To enable developer feedback, configure a webhook in the repository where the PR Reviewer operates.
 
-- [x] Contexto de dependências entre arquivos do mesmo PR (com orçamento de tokens)
-- [x] Comentários de review ancorados na linha alterada + fallback
-- [x] Captura de feedback do dev (`/rate bom`/`/rate ruim`) via webhook
-- [x] Persistência em banco (SQLite local / Postgres em produção)
-- [x] Few-shot com sugestões bem avaliadas em análises futuras
-- [ ] Deploy da API com Postgres de verdade (Render/Supabase) — hoje em
-      produção ainda está usando o fallback SQLite, que **não persiste**
-      entre deploys/restarts do Render
-- [ ] Configurar o webhook no(s) repositório(s) onde a ferramenta atua
-- [ ] Testar o fluxo completo (sugestão → feedback → few-shot) em um repositório real
-- [ ] Rodar o experimento comparando sugestões da IA vs. testes escritos por humanos
-- [ ] Escrever a seção de metodologia do TCC com os resultados
+Go to:
 
-## Ideias de expansão (pós-MVP)
+```text
+Repository
+  → Settings
+  → Webhooks
+  → Add webhook
+```
 
-- Suporte a outras linguagens além de Python
-- Dashboard com o histórico de sugestões e feedback
-- Classificação de prioridade das sugestões
-- Migrations de schema (ex: Alembic) em vez de `create_all` na inicialização
+Configure:
+
+```text
+Payload URL:
+<API_URL>/webhook/github
+
+Content type:
+application/json
+
+Secret:
+GITHUB_WEBHOOK_SECRET
+```
+
+Enable the Pull Request review comment event.
+
+The webhook allows the application to receive commands such as:
+
+```text
+/rate bom
+/rate ruim
+```
+
+## Database
+
+The application uses SQLModel for database interaction.
+
+SQLite can be used for local development:
+
+```text
+SQLite
+```
+
+PostgreSQL can be used in production:
+
+```text
+PostgreSQL
+```
+
+The database stores AI suggestions and developer feedback used by the feedback-based learning mechanism.
+
+## Feedback and Few-shot Learning
+
+One of the main ideas of the project is to use developer feedback to improve future AI reviews.
+
+The process is:
+
+```text
+Code Change
+    |
+    v
+AI Analysis
+    |
+    v
+Suggestion
+    |
+    v
+Developer Evaluation
+    |
+    +---- /rate bom ----> Stored as approved example
+    |
+    +---- /rate ruim ---> Stored as negative feedback
+                              |
+                              v
+                       Future Analysis
+```
+
+Approved suggestions can be included as few-shot examples in future prompts.
+
+This approach provides a lightweight feedback mechanism without requiring model fine-tuning.
+
+## Fallback Strategy
+
+The application attempts to anchor review comments directly to changed lines.
+
+If the line cannot be identified or GitHub rejects the review comment, the system falls back to a general Pull Request comment.
+
+This prevents the review process from losing the generated suggestion because of an anchoring problem.
+
+## Current Status
+
+### Completed
+
+* [x] GitHub API integration
+* [x] Pull Request analysis
+* [x] Python AST analysis
+* [x] Changed function extraction
+* [x] Dependency context gathering
+* [x] Existing test context
+* [x] AI-powered test suggestions
+* [x] GitHub review comments
+* [x] Line-based comment anchoring
+* [x] Fallback comments
+* [x] Developer feedback through webhook
+* [x] Suggestion persistence
+* [x] Few-shot feedback mechanism
+* [x] Automated tests
+
+### Planned
+
+* [ ] Production PostgreSQL deployment
+* [ ] Complete webhook configuration
+* [ ] End-to-end validation in a real repository
+* [ ] Comparison between AI suggestions and human-written tests
+* [ ] TCC methodology and results
+* [ ] Support for additional programming languages
+* [ ] Review history dashboard
+* [ ] Suggestion priority classification
+* [ ] Database migrations with Alembic
+
+## Future Improvements
+
+Possible future improvements include:
+
+* Support for languages beyond Python
+* Risk and priority classification
+* Review history dashboard
+* Improved test scenario generation
+* Additional repository context
+* Database migrations
+* Improved production deployment
+* Metrics for measuring AI suggestion quality
+* Analysis of developer acceptance rate
+
+## Purpose
+
+This project explores the use of Artificial Intelligence to support software quality and the Pull Request review process.
+
+The main goal is to combine QA practices with AI-assisted code analysis to identify potential test scenarios and risks before code reaches production.
+
+The project demonstrates practical experience with:
+
+* API development
+* Automated testing
+* QA automation
+* Static code analysis
+* REST APIs
+* GitHub API
+* GitHub Actions
+* Artificial Intelligence
+* LLM integration
+* Test scenario generation
+* Webhooks
+* Database persistence
+* Python
+
+## Author
+
+**Renan**
+
+Junior QA / Software Quality Analyst focused on software testing, API testing, automation, and AI-assisted quality engineering.
