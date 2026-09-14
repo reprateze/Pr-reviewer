@@ -5,6 +5,7 @@
 ![Pytest](https://img.shields.io/badge/Pytest-Testing-orange?logo=pytest)
 ![GitHub Actions](https://img.shields.io/badge/GitHub-Actions-black?logo=githubactions)
 ![Gemini](https://img.shields.io/badge/Google-Gemini-blue)
+[![Render](https://img.shields.io/badge/Deployed%20on-Render-46E3B7?logo=render&logoColor=white)](https://render.com/)
 
 AI-powered tool that automatically analyzes Pull Requests on GitHub and provides test suggestions and risk analysis for modified Python code.
 
