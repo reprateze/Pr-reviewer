@@ -22,6 +22,22 @@ class Settings:
     # Nome do modelo a ser usado (Gemini, via Google AI Studio)
     llm_model: str = os.getenv("LLM_MODEL", "gemini-2.0-flash")
 
+    # Intervalo mínimo (em segundos) entre chamadas ao LLM, para respeitar o
+    # limite de requisições por minuto (RPM) do plano gratuito. Depende de
+    # qual modelo está configurado em LLM_MODEL — modelos "Flash Lite" têm
+    # RPM bem maior que os "Flash" comuns, então vale ajustar essa env var
+    # de acordo (ex: 4s para um modelo com 15 RPM, em vez dos 15s padrão
+    # calibrados para 5 RPM).
+    llm_min_request_interval_seconds: int = int(
+        os.getenv("LLM_MIN_REQUEST_INTERVAL_SECONDS", "15")
+    )
+
+    # Quantas funções (no máximo) são analisadas por arquivo alterado em um
+    # PR. Cada função analisada custa 1 requisição ao LLM — em planos
+    # gratuitos com cota de requisições por dia (RPD) baixa, um número maior
+    # aqui esgota a cota mais rápido. Ajuste conforme a cota do modelo em uso.
+    max_functions_per_pr: int = int(os.getenv("MAX_FUNCTIONS_PER_PR", "2"))
+
     # Extensões de arquivo que serão analisadas (MVP: só Python)
     supported_extensions: tuple = (".py",)
 
