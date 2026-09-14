@@ -110,3 +110,36 @@ def test_stats_endpoint_returns_data_from_db(tmp_path, monkeypatch):
     body = response.json()
     assert body["total_suggestions"] == 0
     assert body["positive_rate_among_rated"] is None
+
+
+def test_dashboard_endpoint_returns_html(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", create_engine(f"sqlite:///{tmp_path}/test.db"))
+
+    with TestClient(app) as client:
+        response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "PR Reviewer AI" in response.text
+
+
+def test_export_csv_endpoint_returns_csv_with_seeded_data(tmp_path, monkeypatch):
+    from app.models import Suggestion
+
+    monkeypatch.setattr(db, "engine", create_engine(f"sqlite:///{tmp_path}/test.db"))
+
+    with TestClient(app) as client:
+        db.save_suggestion(
+            Suggestion(
+                owner="o", repo="r", pr_number=1, commit_sha="a",
+                filename="a.py", function_name="foo", risk_level="alto",
+                risk_reason="-", llm_model="gemini-3.6-flash",
+            )
+        )
+        response = client.get("/stats/export.csv")
+
+    assert response.status_code == 200
+    assert "text/csv" in response.headers["content-type"]
+    assert "attachment" in response.headers["content-disposition"]
+    assert "function_name" in response.text  # cabeçalho
+    assert "foo" in response.text and "gemini-3.6-flash" in response.text
