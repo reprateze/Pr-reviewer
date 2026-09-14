@@ -1,5 +1,9 @@
+from fastapi.testclient import TestClient
+from sqlmodel import create_engine
+
+import app.db as db
 from app.code_analyzer import CodeAnalyzer
-from app.main import _build_extra_context, _functions_touched_by_diff, _parse_rating
+from app.main import _build_extra_context, _functions_touched_by_diff, _parse_rating, app
 
 
 def test_build_extra_context_returns_none_when_no_parts():
@@ -82,3 +86,27 @@ def bar():
     result = _functions_touched_by_diff(functions, commentable)
 
     assert [f.name for f in result] == ["bar"]
+
+
+def test_health_endpoint_returns_ok(tmp_path, monkeypatch):
+    # Isola o banco num arquivo temporário — sem isso, o lifespan (init_db)
+    # criaria um data.db de verdade na raiz do projeto.
+    monkeypatch.setattr(db, "engine", create_engine(f"sqlite:///{tmp_path}/test.db"))
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_stats_endpoint_returns_data_from_db(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", create_engine(f"sqlite:///{tmp_path}/test.db"))
+
+    with TestClient(app) as client:
+        response = client.get("/stats")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_suggestions"] == 0
+    assert body["positive_rate_among_rated"] is None

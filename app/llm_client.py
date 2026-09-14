@@ -86,12 +86,9 @@ class LLMClient:
 
         self.client = genai.Client(api_key=self.api_key)
 
-        # Limite gratuito do Gemini:
-        # 5 requisições por minuto.
-        #
-        # Usamos 15 segundos entre chamadas para manter
-        # uma margem de segurança.
-        self.min_request_interval = 15
+        # Intervalo mínimo entre chamadas, calibrado conforme o RPM do
+        # modelo configurado (ver LLM_MIN_REQUEST_INTERVAL_SECONDS).
+        self.min_request_interval = settings.llm_min_request_interval_seconds
         self.last_request_time = 0.0
 
     def _wait_for_rate_limit(self):

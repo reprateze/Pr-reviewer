@@ -27,6 +27,8 @@ from app.context_gatherer import ContextGatherer
 from app.comment_formatter import format_pr_comment, format_single_suggestion_comment
 from app.db import (
     find_suggestion_by_comment_id,
+    find_unchanged_suggestion,
+    get_stats,
     get_top_rated_examples,
     init_db,
     save_feedback,
@@ -93,6 +95,8 @@ def _post_suggestion(
     func,
     analysis: dict,
     commentable: set[int],
+    llm_model: str | None = None,
+    code_hash: str | None = None,
 ) -> int | None:
     """
     Tenta postar a sugestão como um comentário de review ancorado na linha
@@ -132,6 +136,8 @@ def _post_suggestion(
                 risk_reason=analysis.get("risk_reason", ""),
                 suggested_tests=analysis.get("suggested_tests", []),
                 github_comment_id=comment_id,
+                llm_model=llm_model,
+                code_hash=code_hash,
             )
         )
     except Exception:
@@ -177,6 +183,17 @@ def health_check():
     return {"status": "ok"}
 
 
+@app.get("/stats")
+def stats():
+    """
+    Resumo agregado de todas as sugestões geradas até agora — total,
+    distribuição por nível de risco, por avaliação do dev e por modelo do
+    LLM usado. Pensado para alimentar direto a análise do experimento do
+    TCC, sem precisar exportar dados manualmente do banco.
+    """
+    return get_stats()
+
+
 @app.post("/review")
 def review_pull_request(payload: ReviewRequest):
     """
@@ -218,6 +235,7 @@ def review_pull_request(payload: ReviewRequest):
 
     fallback_results = []  # sugestões que não puderam ser ancoradas no diff
     functions_analyzed = 0
+    functions_skipped_unchanged = 0
 
     # Primeira passada: baixa e analisa TODOS os arquivos .py relevantes do PR
     # antes de consultar a IA. Isso permite resolver dependências que atravessam
@@ -260,13 +278,31 @@ def review_pull_request(payload: ReviewRequest):
 
         changed_functions = _functions_touched_by_diff(functions, commentable)
 
-        # NOTA: limitado a 1 função por arquivo por enquanto, para economizar
-        # a cota gratuita da API (5 req/min, 20 req/dia) durante os testes.
-        # Remover o "[:1]" quando estiver pronto para rodar o experimento
-        # completo (ou trocar para um plano pago / outra chave).
-        for func in changed_functions[:1]:
+        # Limitado a MAX_FUNCTIONS_PER_PR funções por arquivo — cada uma
+        # custa 1 requisição ao LLM, e planos gratuitos costumam ter cota de
+        # requisições por dia (RPD) baixa. Ajuste essa env var conforme a
+        # cota do modelo configurado em LLM_MODEL.
+        for func in changed_functions[: settings.max_functions_per_pr]:
             if func.num_lines > settings.max_diff_lines:
                 continue  # evita mandar funções gigantes para a IA
+
+            code_hash = hashlib.sha256(func.source.encode("utf-8")).hexdigest()
+
+            # Se um push anterior neste mesmo PR já analisou essa função com
+            # esse EXATO código, pula — evita gastar cota do LLM reanalisando
+            # uma função que não mudou (comum quando um "synchronize" só
+            # tocou outra parte do arquivo).
+            try:
+                unchanged = find_unchanged_suggestion(
+                    payload.owner, payload.repo, payload.pr_number,
+                    filename, func.name, code_hash,
+                )
+            except Exception:
+                unchanged = None
+
+            if unchanged is not None:
+                functions_skipped_unchanged += 1
+                continue
 
             # Nomes de dependências (funções chamadas, existentes no mesmo
             # arquivo) também entram na busca por testes já existentes —
@@ -336,6 +372,8 @@ def review_pull_request(payload: ReviewRequest):
                 func,
                 analysis,
                 commentable,
+                llm_model=llm.model,
+                code_hash=code_hash,
             )
             if comment_id is None:
                 fallback_results.append(
@@ -365,6 +403,7 @@ def review_pull_request(payload: ReviewRequest):
         "status": "success",
         "functions_analyzed": functions_analyzed,
         "functions_with_inline_comment": functions_analyzed - len(fallback_results),
+        "functions_skipped_unchanged": functions_skipped_unchanged,
         "comment_preview": comment_preview,
     }
 
