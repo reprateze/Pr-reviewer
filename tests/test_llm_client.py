@@ -1,3 +1,4 @@
+import app.llm_client as llm_client_module
 from app.llm_client import LLMClient
 
 
@@ -46,3 +47,18 @@ def test_parse_response_strips_emojis_from_text_fields():
     assert "Risco alto" in result["risk_reason"]
     assert "✅" not in result["suggested_tests"][0]["title"]
     assert "Caso feliz" in result["suggested_tests"][0]["title"]
+
+
+def test_min_request_interval_comes_from_settings(monkeypatch):
+    """
+    O intervalo de rate limit precisa ser configurável (não mais fixo em
+    15s) — modelos diferentes têm RPM diferentes (ex: "Flash Lite" costuma
+    permitir bem mais requisições por minuto que o "Flash" comum).
+    """
+    monkeypatch.setattr(
+        llm_client_module.settings, "llm_min_request_interval_seconds", 4
+    )
+
+    client = LLMClient(api_key="fake-key")
+
+    assert client.min_request_interval == 4

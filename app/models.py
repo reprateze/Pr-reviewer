@@ -37,6 +37,18 @@ class Suggestion(SQLModel, table=True):
     # SQLite (guardado como texto) quanto em Postgres (guardado como jsonb).
     suggested_tests: list = Field(default_factory=list, sa_column=Column(JSON))
 
+    # Qual modelo do LLM gerou esta sugestão (ex: "gemini-3.6-flash-lite").
+    # Guardado por sugestão (não só em config) porque o modelo configurado
+    # pode mudar ao longo do tempo — útil para comparar qualidade entre
+    # modelos na análise do experimento.
+    llm_model: str | None = None
+
+    # Hash (sha256) do código-fonte da função no momento da análise. Permite
+    # detectar, num push seguinte ao mesmo PR, se essa função realmente
+    # mudou desde a última análise — evita gastar cota do LLM reanalisando
+    # uma função que não foi tocada entre um "synchronize" e outro.
+    code_hash: str | None = Field(default=None, index=True)
+
     # id do comentário de review no GitHub. None quando o comentário não pôde
     # ser ancorado numa linha do diff e a sugestão caiu no fallback de
     # comentário único (ver main.py) — nesse caso não há como capturar feedback

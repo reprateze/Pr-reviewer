@@ -272,6 +272,14 @@ The endpoint receives GitHub webhook events containing developer responses to AI
 
 The feedback is used to associate ratings with previously generated suggestions.
 
+### Statistics
+
+```http
+GET /stats
+```
+
+Returns aggregated data across all generated suggestions: total count, breakdown by risk level, by developer rating, and by LLM model used. Intended to feed the experiment/results analysis directly, without manual data export.
+
 ## GitHub Actions
 
 The project includes a GitHub Actions workflow responsible for triggering the review process.
@@ -394,6 +402,8 @@ The project includes automated tests covering the main application components:
 * Database operations
 * LLM client
 * API endpoints
+
+The full suite also runs automatically on every push and pull request via GitHub Actions (`.github/workflows/tests.yml`), catching integration issues (broken imports, schema mismatches) before they reach `main`.
 
 ## Testing Architecture
 
@@ -528,12 +538,17 @@ This prevents the review process from losing the generated suggestion because of
 * [x] Suggestion persistence
 * [x] Few-shot feedback mechanism
 * [x] Automated tests
+* [x] Production PostgreSQL deployment
+* [x] Complete webhook configuration
+* [x] End-to-end validation in a real repository
+* [x] Multiple functions analyzed per Pull Request (configurable)
+* [x] LLM model tracked per suggestion
+* [x] Skip re-analysis of unchanged functions
+* [x] Aggregated metrics endpoint (`/stats`)
+* [x] Continuous integration (tests run on every push/PR)
 
 ### Planned
 
-* [ ] Production PostgreSQL deployment
-* [ ] Complete webhook configuration
-* [ ] End-to-end validation in a real repository
 * [ ] Comparison between AI suggestions and human-written tests
 * [ ] TCC methodology and results
 * [ ] Support for additional programming languages
@@ -552,7 +567,6 @@ Possible future improvements include:
 * Additional repository context
 * Database migrations
 * Improved production deployment
-* Metrics for measuring AI suggestion quality
 * Analysis of developer acceptance rate
 
 ## Purpose

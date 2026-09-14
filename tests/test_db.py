@@ -94,6 +94,68 @@ def test_save_feedback_updates_rating_and_reason(tmp_path, monkeypatch):
     assert updated.feedback_at is not None
 
 
+def test_find_unchanged_suggestion_matches_same_code_hash(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    db.save_suggestion(
+        Suggestion(
+            owner="o", repo="r", pr_number=5, commit_sha="a1",
+            filename="app.py", function_name="foo", risk_level="baixo",
+            risk_reason="-", code_hash="hash-v1",
+        )
+    )
+
+    found = db.find_unchanged_suggestion("o", "r", 5, "app.py", "foo", "hash-v1")
+    assert found is not None
+
+    # Hash diferente (código de fato mudou) -> não deve casar
+    assert db.find_unchanged_suggestion("o", "r", 5, "app.py", "foo", "hash-v2") is None
+    # PR diferente -> não deve casar mesmo com o mesmo hash
+    assert db.find_unchanged_suggestion("o", "r", 6, "app.py", "foo", "hash-v1") is None
+
+
+def test_get_stats_aggregates_totals_risk_rating_and_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    s1 = db.save_suggestion(
+        Suggestion(
+            owner="o", repo="r", pr_number=1, commit_sha="a",
+            filename="a.py", function_name="foo", risk_level="alto",
+            risk_reason="-", llm_model="gemini-3.6-flash", github_comment_id=1,
+        )
+    )
+    db.save_suggestion(
+        Suggestion(
+            owner="o", repo="r", pr_number=1, commit_sha="a",
+            filename="a.py", function_name="bar", risk_level="baixo",
+            risk_reason="-", llm_model="gemini-3.6-flash-lite", github_comment_id=2,
+        )
+    )
+    db.save_feedback(s1.id, rating="positivo", reason=None)
+
+    stats = db.get_stats()
+
+    assert stats["total_suggestions"] == 2
+    assert stats["by_risk_level"] == {"alto": 1, "baixo": 1}
+    assert stats["by_rating"]["positivo"] == 1
+    assert stats["by_rating"]["sem_feedback"] == 1
+    assert stats["by_llm_model"] == {
+        "gemini-3.6-flash": 1, "gemini-3.6-flash-lite": 1,
+    }
+    assert stats["feedback_rate"] == 0.5
+    assert stats["positive_rate_among_rated"] == 1.0
+
+
+def test_get_stats_handles_empty_database(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    stats = db.get_stats()
+
+    assert stats["total_suggestions"] == 0
+    assert stats["feedback_rate"] == 0
+    assert stats["positive_rate_among_rated"] is None
+
+
 def test_get_top_rated_examples_only_returns_positive_feedback(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
 
