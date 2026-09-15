@@ -288,23 +288,6 @@ def review_pull_request(payload: ReviewRequest):
     except Exception:
         repo_tree = []
 
-    # Exemplos de sugestões que devs avaliaram como boas (few-shot), usados
-    # pra calibrar o estilo/qualidade esperado das próximas análises — a
-    # forma de "aprendizado" possível sem fine-tuning (fora de alcance no
-    # tier gratuito do Gemini).
-    try:
-        few_shot_examples = [
-            {
-                "function_name": ex.function_name,
-                "risk_level": ex.risk_level,
-                "risk_reason": ex.risk_reason,
-                "suggested_tests": ex.suggested_tests,
-            }
-            for ex in get_top_rated_examples(limit=2)
-        ] or None
-    except Exception:
-        few_shot_examples = None
-
     all_results = []  # toda função analisada nesta rodada, ancorada ou não
     functions_analyzed = 0
     functions_skipped_unchanged = 0
@@ -417,6 +400,25 @@ def review_pull_request(payload: ReviewRequest):
             extra_context = _build_extra_context(
                 context_parts, settings.max_extra_context_chars
             )
+
+            # Exemplos de sugestões bem avaliadas (few-shot), priorizando essa
+            # MESMA função/arquivo antes de cair pra "mesmo repo" ou "global"
+            # — ver get_top_rated_examples() pra a ordem de prioridade.
+            try:
+                few_shot_examples = [
+                    {
+                        "function_name": ex.function_name,
+                        "risk_level": ex.risk_level,
+                        "risk_reason": ex.risk_reason,
+                        "suggested_tests": ex.suggested_tests,
+                    }
+                    for ex in get_top_rated_examples(
+                        payload.owner, payload.repo, limit=2,
+                        filename=filename, function_name=func.name,
+                    )
+                ] or None
+            except Exception:
+                few_shot_examples = None
 
             try:
                 analysis = llm.suggest_tests_for_function(
