@@ -3,18 +3,40 @@ Monta o corpo do comentário (em Markdown) que será postado no Pull Request,
 a partir das sugestões geradas pela IA para cada função analisada.
 """
 
-RISK_EMOJI = {
-    "alto": "🔴",
-    "medio": "🟡",
-    "baixo": "🟢",
-    "desconhecido": "⚪",
-}
-
 FEEDBACK_INSTRUCTIONS = (
     "\n\n_Essa sugestão ajudou? Responda este comentário com `/rate bom` ou "
     "`/rate ruim` (pode incluir o motivo depois) — isso ajuda a calibrar as "
     "próximas análises._"
 )
+
+
+def _format_tests_section(analysis: dict) -> list[str]:
+    tests = analysis.get("suggested_tests", [])
+    if not tests:
+        return ["_Nenhuma sugestão específica gerada para esta função._"]
+
+    lines = ["**Sugestões de teste:**"]
+    for t in tests:
+        lines.append(f"- **{t.get('title', 'Sem título')}** — {t.get('description', '')}")
+    return lines
+
+
+def _format_improvements_section(analysis: dict) -> list[str]:
+    """
+    Problemas concretos que a IA identificou no código (não só cenário sem
+    teste) e como corrigi-los. Fica de fora do comentário quando a IA não
+    aponta nada — não força uma seção vazia.
+    """
+    improvements = analysis.get("suggested_improvements", [])
+    if not improvements:
+        return []
+
+    lines = ["", "**Melhorias sugeridas:**"]
+    for imp in improvements:
+        lines.append(
+            f"- **{imp.get('issue', 'Ponto de atenção')}** — {imp.get('suggestion', '')}"
+        )
+    return lines
 
 
 def format_single_suggestion_comment(
@@ -27,21 +49,14 @@ def format_single_suggestion_comment(
     quando não é possível ancorar o comentário numa linha do diff.
     """
     risk = analysis.get("risk_level", "desconhecido")
-    emoji = RISK_EMOJI.get(risk, "⚪")
 
     lines = [
-        f"### {emoji} PR Reviewer AI — `{function_name}()`",
+        f"### PR Reviewer AI — `{function_name}()`",
         f"**Risco estimado:** {risk.upper()}  ",
         f"**Motivo:** {analysis.get('risk_reason', '—')}\n",
     ]
-
-    tests = analysis.get("suggested_tests", [])
-    if tests:
-        lines.append("**Sugestões de teste:**")
-        for t in tests:
-            lines.append(f"- **{t.get('title', 'Sem título')}** — {t.get('description', '')}")
-    else:
-        lines.append("_Nenhuma sugestão específica gerada para esta função._")
+    lines.extend(_format_tests_section(analysis))
+    lines.extend(_format_improvements_section(analysis))
 
     return "\n".join(lines) + FEEDBACK_INSTRUCTIONS
 
@@ -50,21 +65,14 @@ def _format_result_block(item: dict) -> list[str]:
     """Monta as linhas de markdown pra UM item {filename, function_name, analysis}."""
     analysis = item["analysis"]
     risk = analysis.get("risk_level", "desconhecido")
-    emoji = RISK_EMOJI.get(risk, "⚪")
 
     lines = [
-        f"### {emoji} `{item['filename']}` → `{item['function_name']}()`",
+        f"### `{item['filename']}` → `{item['function_name']}()`",
         f"**Risco estimado:** {risk.upper()}  ",
         f"**Motivo:** {analysis.get('risk_reason', '—')}\n",
     ]
-
-    tests = analysis.get("suggested_tests", [])
-    if tests:
-        lines.append("**Sugestões de teste:**")
-        for t in tests:
-            lines.append(f"- **{t.get('title', 'Sem título')}** — {t.get('description', '')}")
-    else:
-        lines.append("_Nenhuma sugestão específica gerada para esta função._")
+    lines.extend(_format_tests_section(analysis))
+    lines.extend(_format_improvements_section(analysis))
 
     return lines
 
@@ -84,11 +92,11 @@ def format_pr_comment(results: list[dict]) -> str:
     """
     if not results:
         return (
-            "## 🤖 PR Reviewer AI\n\n"
+            "## PR Reviewer AI\n\n"
             "Nenhuma função Python nova ou alterada foi identificada neste PR."
         )
 
-    lines = ["## 🤖 PR Reviewer AI — Sugestões de Teste\n"]
+    lines = ["## PR Reviewer AI — Sugestões de Teste\n"]
 
     for item in results:
         lines.extend(_format_result_block(item))
@@ -123,16 +131,16 @@ def format_summary_comment(all_results: list[dict]) -> str:
     anchored_count = len(all_results) - len(fallback_results)
 
     lines = [
-        "## 🤖 PR Reviewer AI — Resumo\n",
+        "## PR Reviewer AI — Resumo\n",
         f"**{len(all_results)} função(ões) analisada(s)** neste Pull Request.\n",
         "| Risco | Quantidade |",
         "|---|---|",
-        f"| {RISK_EMOJI['alto']} Alto | {risk_counts['alto']} |",
-        f"| {RISK_EMOJI['medio']} Médio | {risk_counts['medio']} |",
-        f"| {RISK_EMOJI['baixo']} Baixo | {risk_counts['baixo']} |",
+        f"| Alto | {risk_counts['alto']} |",
+        f"| Médio | {risk_counts['medio']} |",
+        f"| Baixo | {risk_counts['baixo']} |",
     ]
     if risk_counts["desconhecido"]:
-        lines.append(f"| {RISK_EMOJI['desconhecido']} Desconhecido | {risk_counts['desconhecido']} |")
+        lines.append(f"| Desconhecido | {risk_counts['desconhecido']} |")
 
     lines.append("")
     lines.append(

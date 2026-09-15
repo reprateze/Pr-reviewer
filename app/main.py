@@ -144,6 +144,7 @@ def _post_suggestion(
                 risk_level=analysis.get("risk_level", "desconhecido"),
                 risk_reason=analysis.get("risk_reason", ""),
                 suggested_tests=analysis.get("suggested_tests", []),
+                suggested_improvements=analysis.get("suggested_improvements", []),
                 github_comment_id=comment_id,
                 llm_model=llm_model,
                 code_hash=code_hash,
