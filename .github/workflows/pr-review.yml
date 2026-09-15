@@ -7,15 +7,16 @@ on:
 jobs:
   review:
     runs-on: ubuntu-latest
-    # Sem o secret REVIEWER_API_URL configurado (ex: neste próprio repositório,
-    # que serve só de fonte do template — o alvo real é o repositório onde a
-    # ferramenta vai atuar), pula o job em vez de falhar o check do PR.
-    if: ${{ secrets.REVIEWER_API_URL != '' }}
     steps:
       - name: Chamar API do PR Reviewer AI
         env:
           REVIEWER_API_URL: ${{ secrets.REVIEWER_API_URL }}
         run: |
+          if [ -z "$REVIEWER_API_URL" ]; then
+            echo "REVIEWER_API_URL não configurado — pulando (normal neste repositório-fonte, onde este arquivo é só o template pra copiar)."
+            exit 0
+          fi
+
           curl -X POST "$REVIEWER_API_URL/review" \
             -H "Content-Type: application/json" \
             -d '{
@@ -31,6 +32,9 @@ jobs:
 #    Secret no repositório em Settings > Secrets and variables > Actions.
 # 2. O backend precisa ter GITHUB_TOKEN e LLM_API_KEY configurados nele mesmo,
 #    não neste workflow, já que quem chama a IA e comenta é o backend.
-# 3. Sem esse secret configurado, o job é pulado (não falha) — é o caso do
-#    próprio repositório Pr-reviewer, onde este arquivo é só o template-fonte
-#    pra ser copiado, não roda contra o próprio código da ferramenta.
+# 3. Sem esse secret configurado, o step sai com sucesso sem fazer nada — é
+#    o caso do próprio repositório Pr-reviewer, onde este arquivo é só o
+#    template-fonte pra ser copiado, não roda contra o próprio código da
+#    ferramenta. (NOTA: usar "secrets" direto num "if:" de job/step não é
+#    permitido pelo GitHub Actions — quebra o parsing do workflow inteiro;
+#    por isso a checagem é feita dentro do script do step.)
