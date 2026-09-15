@@ -76,6 +76,22 @@ class GitHubClient:
             response.raise_for_status()
             return response.json()
 
+    def list_issue_comments(self, owner: str, repo: str, pr_number: int) -> list[dict]:
+        """Lista os comentários gerais (issue comments) já postados no PR."""
+        url = f"{self.base_url}/repos/{owner}/{repo}/issues/{pr_number}/comments"
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(url, headers=self._headers(), params={"per_page": 100})
+            response.raise_for_status()
+            return response.json()
+
+    def update_comment(self, owner: str, repo: str, comment_id: int, body: str) -> dict:
+        """Edita um comentário geral (issue comment) já existente, no lugar."""
+        url = f"{self.base_url}/repos/{owner}/{repo}/issues/comments/{comment_id}"
+        with httpx.Client(timeout=30.0) as client:
+            response = client.patch(url, headers=self._headers(), json={"body": body})
+            response.raise_for_status()
+            return response.json()
+
     def post_review_comment(
         self,
         owner: str,

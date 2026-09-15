@@ -1,9 +1,18 @@
+from unittest.mock import MagicMock
+
 from fastapi.testclient import TestClient
 from sqlmodel import create_engine
 
 import app.db as db
 from app.code_analyzer import CodeAnalyzer
-from app.main import _build_extra_context, _functions_touched_by_diff, _parse_rating, app
+from app.comment_formatter import SUMMARY_MARKER
+from app.main import (
+    _build_extra_context,
+    _functions_touched_by_diff,
+    _parse_rating,
+    _post_or_update_summary_comment,
+    app,
+)
 
 
 def test_build_extra_context_returns_none_when_no_parts():
@@ -143,3 +152,35 @@ def test_export_csv_endpoint_returns_csv_with_seeded_data(tmp_path, monkeypatch)
     assert "attachment" in response.headers["content-disposition"]
     assert "function_name" in response.text  # cabeçalho
     assert "foo" in response.text and "gemini-3.6-flash" in response.text
+
+
+def test_post_or_update_summary_comment_creates_when_none_exists():
+    fake_github = MagicMock()
+    fake_github.list_issue_comments.return_value = []
+
+    _post_or_update_summary_comment(fake_github, "o", "r", 1, "corpo novo")
+
+    fake_github.post_comment.assert_called_once_with("o", "r", 1, "corpo novo")
+    fake_github.update_comment.assert_not_called()
+
+
+def test_post_or_update_summary_comment_edits_existing_one():
+    fake_github = MagicMock()
+    fake_github.list_issue_comments.return_value = [
+        {"id": 111, "body": "comentário qualquer de outra pessoa"},
+        {"id": 222, "body": f"{SUMMARY_MARKER}\n## PR Reviewer AI — Resumo"},
+    ]
+
+    _post_or_update_summary_comment(fake_github, "o", "r", 1, "corpo atualizado")
+
+    fake_github.update_comment.assert_called_once_with("o", "r", 222, "corpo atualizado")
+    fake_github.post_comment.assert_not_called()
+
+
+def test_post_or_update_summary_comment_falls_back_to_create_on_list_failure():
+    fake_github = MagicMock()
+    fake_github.list_issue_comments.side_effect = Exception("boom")
+
+    _post_or_update_summary_comment(fake_github, "o", "r", 1, "corpo novo")
+
+    fake_github.post_comment.assert_called_once_with("o", "r", 1, "corpo novo")

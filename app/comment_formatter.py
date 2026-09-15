@@ -3,6 +3,11 @@ Monta o corpo do comentário (em Markdown) que será postado no Pull Request,
 a partir das sugestões geradas pela IA para cada função analisada.
 """
 
+# Marcador invisível (comentário HTML, não renderiza) usado pra identificar
+# o comentário-resumo entre os já postados no PR — permite EDITAR o mesmo
+# comentário a cada novo push, em vez de empilhar um resumo por commit.
+SUMMARY_MARKER = "<!-- pr-reviewer-ai:summary -->"
+
 FEEDBACK_INSTRUCTIONS = (
     "\n\n_Essa sugestão ajudou? Responda este comentário com `/rate bom` ou "
     "`/rate ruim` (pode incluir o motivo depois) — isso ajuda a calibrar as "
@@ -92,11 +97,12 @@ def format_pr_comment(results: list[dict]) -> str:
     """
     if not results:
         return (
+            f"{SUMMARY_MARKER}\n"
             "## PR Reviewer AI\n\n"
             "Nenhuma função Python nova ou alterada foi identificada neste PR."
         )
 
-    lines = ["## PR Reviewer AI — Sugestões de Teste\n"]
+    lines = [SUMMARY_MARKER, "## PR Reviewer AI — Sugestões de Teste\n"]
 
     for item in results:
         lines.extend(_format_result_block(item))
@@ -131,6 +137,7 @@ def format_summary_comment(all_results: list[dict]) -> str:
     anchored_count = len(all_results) - len(fallback_results)
 
     lines = [
+        SUMMARY_MARKER,
         "## PR Reviewer AI — Resumo\n",
         f"**{len(all_results)} função(ões) analisada(s)** neste Pull Request.\n",
         "| Risco | Quantidade |",
@@ -158,8 +165,9 @@ def format_summary_comment(all_results: list[dict]) -> str:
             lines.append("\n---\n")
 
     lines.append(
-        "\n_Comentário gerado automaticamente. As sugestões devem ser revisadas "
-        "por um humano antes de serem aplicadas._"
+        "\n_Comentário gerado automaticamente e atualizado a cada novo commit "
+        "neste PR. As sugestões devem ser revisadas por um humano antes de "
+        "serem aplicadas._"
     )
 
     return "\n".join(lines)
