@@ -97,21 +97,84 @@ def save_feedback(suggestion_id: int, rating: str, reason: str | None) -> Sugges
         return suggestion
 
 
-def get_top_rated_examples(limit: int = 2) -> list[Suggestion]:
+def _fill_examples(
+    session: Session, base_query, exclude_ids: set[int], examples: list, limit: int
+) -> None:
+    """Acrescenta a `examples` (in-place) resultados de `base_query` que ainda
+    não estão em `exclude_ids`, até atingir `limit` no total."""
+    if len(examples) >= limit:
+        return
+    for ex in session.exec(base_query).all():
+        if ex.id not in exclude_ids:
+            examples.append(ex)
+            exclude_ids.add(ex.id)
+            if len(examples) >= limit:
+                return
+
+
+def get_top_rated_examples(
+    owner: str,
+    repo: str,
+    limit: int = 2,
+    filename: str | None = None,
+    function_name: str | None = None,
+) -> list[Suggestion]:
     """
     Sugestões que os devs marcaram como "positivo", usadas como exemplos
     (few-shot) para calibrar a IA em análises futuras — uma forma simples e
     honesta de "aprendizado" com feedback, já que fine-tuning não é viável
     no tier gratuito do Gemini.
+
+    Prioriza em 3 níveis, do mais específico ao mais genérico, só descendo de
+    nível quando o anterior não tem exemplos suficientes pra completar
+    `limit` (evita ficar sem exemplo nenhum num repositório/função novos):
+
+    1. Essa MESMA função, no mesmo arquivo, já avaliada como boa antes — a
+       referência mais relevante possível (mesmo código, mesmo contexto,
+       possivelmente até o mesmo tipo de risco recorrente).
+    2. Qualquer função do MESMO repositório — convenções/domínio parecidos.
+    3. Qualquer repositório — só pra nunca ficar sem exemplo nenhum.
     """
     with Session(engine) as session:
-        statement = (
+        examples: list[Suggestion] = []
+        exclude_ids: set[int] = set()
+
+        if filename and function_name:
+            _fill_examples(
+                session,
+                select(Suggestion)
+                .where(
+                    Suggestion.rating == "positivo",
+                    Suggestion.owner == owner,
+                    Suggestion.repo == repo,
+                    Suggestion.filename == filename,
+                    Suggestion.function_name == function_name,
+                )
+                .order_by(Suggestion.feedback_at.desc()),
+                exclude_ids, examples, limit,
+            )
+
+        _fill_examples(
+            session,
+            select(Suggestion)
+            .where(
+                Suggestion.rating == "positivo",
+                Suggestion.owner == owner,
+                Suggestion.repo == repo,
+            )
+            .order_by(Suggestion.feedback_at.desc()),
+            exclude_ids, examples, limit,
+        )
+
+        _fill_examples(
+            session,
             select(Suggestion)
             .where(Suggestion.rating == "positivo")
-            .order_by(Suggestion.feedback_at.desc())
-            .limit(limit)
+            .order_by(Suggestion.feedback_at.desc()),
+            exclude_ids, examples, limit,
         )
-        return list(session.exec(statement).all())
+
+        return examples
 
 
 def get_all_suggestions() -> list[Suggestion]:

@@ -176,8 +176,91 @@ def test_get_top_rated_examples_only_returns_positive_feedback(tmp_path, monkeyp
     db.save_feedback(good.id, rating="positivo", reason=None)
     db.save_feedback(bad.id, rating="negativo", reason=None)
 
-    examples = db.get_top_rated_examples(limit=5)
+    examples = db.get_top_rated_examples("o", "r", limit=5)
 
     names = [e.function_name for e in examples]
     assert "boa" in names
     assert "ruim" not in names
+
+
+def test_get_top_rated_examples_prioritizes_same_repository(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    # Exemplo positivo de OUTRO repositório — não deve ter nada a ver com o
+    # domínio/convenções do repo sendo analisado agora.
+    outro_repo = db.save_suggestion(
+        Suggestion(
+            owner="outro-dono", repo="outro-repo", pr_number=1, commit_sha="a",
+            filename="x.py", function_name="de_outro_projeto", risk_level="alto",
+            risk_reason="-", github_comment_id=1,
+        )
+    )
+    db.save_feedback(outro_repo.id, rating="positivo", reason=None)
+
+    mesmo_repo = db.save_suggestion(
+        Suggestion(
+            owner="o", repo="r", pr_number=2, commit_sha="a",
+            filename="y.py", function_name="do_mesmo_projeto", risk_level="baixo",
+            risk_reason="-", github_comment_id=2,
+        )
+    )
+    db.save_feedback(mesmo_repo.id, rating="positivo", reason=None)
+
+    # Com limit=1, só cabe 1 exemplo — tem que ser o do MESMO repositório,
+    # mesmo o outro tendo sido avaliado há mais tempo/rating igual.
+    examples = db.get_top_rated_examples("o", "r", limit=1)
+
+    assert [e.function_name for e in examples] == ["do_mesmo_projeto"]
+
+
+def test_get_top_rated_examples_falls_back_to_other_repos_when_not_enough(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    outro_repo = db.save_suggestion(
+        Suggestion(
+            owner="outro-dono", repo="outro-repo", pr_number=1, commit_sha="a",
+            filename="x.py", function_name="de_outro_projeto", risk_level="alto",
+            risk_reason="-", github_comment_id=1,
+        )
+    )
+    db.save_feedback(outro_repo.id, rating="positivo", reason=None)
+
+    # Repositório "o/r" ainda não tem NENHUM exemplo positivo próprio —
+    # precisa completar com o de outro repositório em vez de vir vazio.
+    examples = db.get_top_rated_examples("o", "r", limit=2)
+
+    assert [e.function_name for e in examples] == ["de_outro_projeto"]
+
+
+def test_get_top_rated_examples_prioritizes_same_function_and_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    # Outra função do MESMO repositório, mas em lugar diferente do que está
+    # sendo analisado agora.
+    outro_lugar = db.save_suggestion(
+        Suggestion(
+            owner="o", repo="r", pr_number=1, commit_sha="a",
+            filename="outro_arquivo.py", function_name="outra_funcao",
+            risk_level="alto", risk_reason="-", github_comment_id=1,
+        )
+    )
+    db.save_feedback(outro_lugar.id, rating="positivo", reason=None)
+
+    # A MESMA função, no mesmo arquivo, já avaliada como boa antes — deve
+    # vir primeiro, mesmo tendo sido avaliada depois (ordem cronológica não
+    # deveria ser o critério de desempate aqui, prioridade de nível ganha).
+    mesmo_lugar = db.save_suggestion(
+        Suggestion(
+            owner="o", repo="r", pr_number=2, commit_sha="a",
+            filename="calculadora.py", function_name="calcular_porcentagem",
+            risk_level="medio", risk_reason="-", github_comment_id=2,
+        )
+    )
+    db.save_feedback(mesmo_lugar.id, rating="positivo", reason=None)
+
+    examples = db.get_top_rated_examples(
+        "o", "r", limit=1,
+        filename="calculadora.py", function_name="calcular_porcentagem",
+    )
+
+    assert [e.function_name for e in examples] == ["calcular_porcentagem"]
