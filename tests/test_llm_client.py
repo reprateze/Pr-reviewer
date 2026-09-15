@@ -49,6 +49,27 @@ def test_parse_response_strips_emojis_from_text_fields():
     assert "Caso feliz" in result["suggested_tests"][0]["title"]
 
 
+def test_parse_response_keeps_suggested_improvements():
+    client = LLMClient.__new__(LLMClient)
+
+    raw_response = """
+    {
+        "risk_level": "medio",
+        "risk_reason": "-",
+        "suggested_tests": [],
+        "suggested_improvements": [
+            {"issue": "isinstance aceita bool", "suggestion": "Excluir bool explicitamente."}
+        ]
+    }
+    """
+
+    result = client._parse_response(raw_response)
+
+    assert result["suggested_improvements"] == [
+        {"issue": "isinstance aceita bool", "suggestion": "Excluir bool explicitamente."}
+    ]
+
+
 def test_min_request_interval_comes_from_settings(monkeypatch):
     """
     O intervalo de rate limit precisa ser configurável (não mais fixo em

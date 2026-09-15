@@ -114,6 +114,17 @@ def get_top_rated_examples(limit: int = 2) -> list[Suggestion]:
         return list(session.exec(statement).all())
 
 
+def get_all_suggestions() -> list[Suggestion]:
+    """
+    Todas as sugestões já geradas, da mais antiga pra mais nova. Usado pelo
+    export em CSV — pra um dataset pequeno como o de um experimento de TCC,
+    trazer tudo de uma vez é simples e suficiente (sem paginação).
+    """
+    with Session(engine) as session:
+        statement = select(Suggestion).order_by(Suggestion.created_at)
+        return list(session.exec(statement).all())
+
+
 def get_stats() -> dict:
     """
     Resumo agregado de todas as sugestões geradas — pensado para alimentar

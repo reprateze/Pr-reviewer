@@ -10,24 +10,33 @@ Fluxo:
    (quando possível — ver `_post_suggestion`), e registra a sugestão no
    banco para depois receber feedback do dev via webhook.
 """
+import csv
 import hashlib
 import hmac
+import io
 import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from app.config import settings
 from app.code_analyzer import CodeAnalyzer, build_dependency_context
+from app.dashboard import render_dashboard
 from app.diff_utils import commentable_lines, pick_comment_line
 from app.github_client import GitHubClient
 from app.llm_client import LLMClient
 from app.context_gatherer import ContextGatherer
-from app.comment_formatter import format_pr_comment, format_single_suggestion_comment
+from app.comment_formatter import (
+    format_pr_comment,
+    format_single_suggestion_comment,
+    format_summary_comment,
+)
 from app.db import (
     find_suggestion_by_comment_id,
     find_unchanged_suggestion,
+    get_all_suggestions,
     get_stats,
     get_top_rated_examples,
     init_db,
@@ -135,6 +144,7 @@ def _post_suggestion(
                 risk_level=analysis.get("risk_level", "desconhecido"),
                 risk_reason=analysis.get("risk_reason", ""),
                 suggested_tests=analysis.get("suggested_tests", []),
+                suggested_improvements=analysis.get("suggested_improvements", []),
                 github_comment_id=comment_id,
                 llm_model=llm_model,
                 code_hash=code_hash,
@@ -194,6 +204,43 @@ def stats():
     return get_stats()
 
 
+@app.get("/stats/export.csv")
+def export_stats_csv():
+    """
+    Exporta todas as sugestões (uma por linha) em CSV, pronto pra abrir em
+    Excel/Google Sheets — mais útil pra análise do experimento do TCC do que
+    só o resumo agregado do /stats.
+    """
+    suggestions = get_all_suggestions()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "id", "owner", "repo", "pr_number", "filename", "function_name",
+        "risk_level", "risk_reason", "llm_model", "rating", "feedback_reason",
+        "created_at", "feedback_at",
+    ])
+    for s in suggestions:
+        writer.writerow([
+            s.id, s.owner, s.repo, s.pr_number, s.filename, s.function_name,
+            s.risk_level, s.risk_reason, s.llm_model, s.rating,
+            s.feedback_reason, s.created_at, s.feedback_at,
+        ])
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=pr_reviewer_suggestions.csv"},
+    )
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    """Painel visual com o resumo do /stats + últimas sugestões geradas."""
+    recent = get_all_suggestions()[-20:][::-1]  # 20 mais recentes, mais nova primeiro
+    return render_dashboard(get_stats(), recent)
+
+
 @app.post("/review")
 def review_pull_request(payload: ReviewRequest):
     """
@@ -233,7 +280,7 @@ def review_pull_request(payload: ReviewRequest):
     except Exception:
         few_shot_examples = None
 
-    fallback_results = []  # sugestões que não puderam ser ancoradas no diff
+    all_results = []  # toda função analisada nesta rodada, ancorada ou não
     functions_analyzed = 0
     functions_skipped_unchanged = 0
 
@@ -375,34 +422,40 @@ def review_pull_request(payload: ReviewRequest):
                 llm_model=llm.model,
                 code_hash=code_hash,
             )
-            if comment_id is None:
-                fallback_results.append(
-                    {
-                        "filename": filename,
-                        "function_name": func.name,
-                        "analysis": analysis,
-                    }
-                )
+            all_results.append(
+                {
+                    "filename": filename,
+                    "function_name": func.name,
+                    "analysis": analysis,
+                    "anchored": comment_id is not None,
+                }
+            )
 
-    # Sugestões que não puderam ser ancoradas numa linha do diff (ou que a
-    # API do GitHub rejeitou) caem aqui, agrupadas num único comentário geral
-    # — igual ao comportamento original, usado como fallback.
-    comment_preview = None
-    if fallback_results or functions_analyzed == 0:
-        comment_preview = format_pr_comment(fallback_results)
-        try:
-            github.post_comment(
-                payload.owner, payload.repo, payload.pr_number, comment_preview
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502, detail=f"Erro ao postar comentário no PR: {exc}"
-            )
+    # Comentário final: se nenhuma função foi analisada, mantém a mensagem
+    # simples de "nada encontrado"; caso contrário, posta sempre um resumo
+    # (contagem por risco, quantas ficaram inline) — e, quando houver
+    # sugestões que não puderam ser ancoradas numa linha do diff, o conteúdo
+    # completo delas entra dentro desse mesmo resumo (fallback).
+    if functions_analyzed == 0:
+        comment_preview = format_pr_comment([])
+    else:
+        comment_preview = format_summary_comment(all_results)
+
+    try:
+        github.post_comment(
+            payload.owner, payload.repo, payload.pr_number, comment_preview
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Erro ao postar comentário no PR: {exc}"
+        )
+
+    anchored_count = sum(1 for item in all_results if item["anchored"])
 
     return {
         "status": "success",
         "functions_analyzed": functions_analyzed,
-        "functions_with_inline_comment": functions_analyzed - len(fallback_results),
+        "functions_with_inline_comment": anchored_count,
         "functions_skipped_unchanged": functions_skipped_unchanged,
         "comment_preview": comment_preview,
     }
