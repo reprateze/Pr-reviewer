@@ -31,6 +31,28 @@ def test_format_single_suggestion_comment_handles_no_tests():
     assert "Nenhuma sugestão específica" in body
 
 
+def test_format_single_suggestion_comment_includes_improvements_when_present():
+    analysis = {
+        "risk_level": "medio",
+        "risk_reason": "-",
+        "suggested_tests": [],
+        "suggested_improvements": [
+            {"issue": "isinstance aceita bool", "suggestion": "Excluir bool explicitamente."},
+        ],
+    }
+    body = format_single_suggestion_comment("app/main.py", "validar", analysis)
+
+    assert "Melhorias sugeridas" in body
+    assert "isinstance aceita bool" in body
+    assert "Excluir bool explicitamente." in body
+
+
+def test_format_single_suggestion_comment_omits_improvements_section_when_empty():
+    body = format_single_suggestion_comment("app/main.py", "foo", ANALYSIS)
+
+    assert "Melhorias sugeridas" not in body
+
+
 def test_format_pr_comment_returns_placeholder_when_empty():
     body = format_pr_comment([])
     assert "Nenhuma função Python" in body
@@ -60,8 +82,8 @@ def test_format_summary_comment_counts_risk_levels():
     body = format_summary_comment(results)
 
     assert "3 função(ões) analisada(s)" in body
-    assert "| 🔴 Alto | 2 |" in body
-    assert "| 🟢 Baixo | 1 |" in body
+    assert "| Alto | 2 |" in body
+    assert "| Baixo | 1 |" in body
     assert "3 comentário(s) postado(s) inline" in body
 
 

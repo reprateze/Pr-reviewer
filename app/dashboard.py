@@ -133,7 +133,7 @@ def render_dashboard(stats: dict, recent: list[Suggestion]) -> str:
 </head>
 <body>
   <div class="wrap">
-    <h1>🤖 PR Reviewer AI — Dashboard</h1>
+    <h1>PR Reviewer AI — Dashboard</h1>
     <p class="subtitle">Resumo das sugestões geradas e do feedback dos devs. Dados em tempo real via <a href="/stats">/stats</a> · <a href="/stats/export.csv">exportar CSV</a></p>
 
     <div class="cards">

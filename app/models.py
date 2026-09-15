@@ -37,6 +37,11 @@ class Suggestion(SQLModel, table=True):
     # SQLite (guardado como texto) quanto em Postgres (guardado como jsonb).
     suggested_tests: list = Field(default_factory=list, sa_column=Column(JSON))
 
+    # Lista de {"issue": str, "suggestion": str} — problemas concretos que a
+    # IA identificou no código (não só cenário sem teste) e como corrigi-los.
+    # Fica vazia quando a IA não aponta nada digno de nota.
+    suggested_improvements: list = Field(default_factory=list, sa_column=Column(JSON))
+
     # Qual modelo do LLM gerou esta sugestão (ex: "gemini-3.6-flash-lite").
     # Guardado por sugestão (não só em config) porque o modelo configurado
     # pode mudar ao longo do tempo — útil para comparar qualidade entre

@@ -50,6 +50,11 @@ Dado o código de uma função alterada em um Pull Request, sua tarefa é:
 1. Identificar se a função parece ter cobertura de teste adequada.
 2. Sugerir de 1 a 4 casos de teste relevantes (incluindo cenários de erro/borda).
 3. Apontar riscos específicos (ex: falta de tratamento de exceção, complexidade alta).
+4. Quando identificar um problema concreto no código (não só um cenário sem
+   teste, mas um bug real ou uma forma claramente melhor de implementar algo),
+   aponte o problema E como corrigir — com um trecho de código sugerido quando
+   fizer sentido. NÃO invente melhorias só para preencher; se o código está
+   bem escrito, deixe a lista vazia.
 
 Não use emojis em nenhum campo de texto da resposta.
 
@@ -69,6 +74,9 @@ e sem usar blocos de código markdown (```):
   "risk_reason": "string curta explicando o risco",
   "suggested_tests": [
     {"title": "string", "description": "string"}
+  ],
+  "suggested_improvements": [
+    {"issue": "string curta descrevendo o problema", "suggestion": "string explicando a correção, pode incluir um trecho de código"}
   ]
 }
 """
