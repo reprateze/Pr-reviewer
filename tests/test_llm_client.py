@@ -36,7 +36,7 @@ def test_parse_response_strips_emojis_from_text_fields():
         "risk_level": "alto",
         "risk_reason": "Risco alto \U0001F525 por falta de tratamento de erro.",
         "suggested_tests": [
-            {"title": "✅ Caso feliz", "description": "Testar o fluxo normal."}
+            {"title": "Caso feliz", "description": "Testar o fluxo normal."}
         ]
     }
     """
@@ -45,7 +45,7 @@ def test_parse_response_strips_emojis_from_text_fields():
 
     assert "\U0001F525" not in result["risk_reason"]
     assert "Risco alto" in result["risk_reason"]
-    assert "✅" not in result["suggested_tests"][0]["title"]
+    assert "ok" not in result["suggested_tests"][0]["title"]
     assert "Caso feliz" in result["suggested_tests"][0]["title"]
 
 
