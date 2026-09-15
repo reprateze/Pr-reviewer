@@ -29,6 +29,7 @@ from app.github_client import GitHubClient
 from app.llm_client import LLMClient
 from app.context_gatherer import ContextGatherer
 from app.comment_formatter import (
+    SUMMARY_MARKER,
     format_pr_comment,
     format_single_suggestion_comment,
     format_summary_comment,
@@ -92,6 +93,30 @@ def _functions_touched_by_diff(functions: list, commentable: set[int]) -> list:
         f for f in functions
         if pick_comment_line(f.start_line, f.end_line, commentable) is not None
     ]
+
+
+def _post_or_update_summary_comment(
+    github: GitHubClient, owner: str, repo: str, pr_number: int, body: str
+) -> None:
+    """
+    Posta o comentário-resumo do PR, ou EDITA um já existente no lugar —
+    identificado pelo marcador invisível SUMMARY_MARKER. Sem isso, cada novo
+    push no PR empilharia mais um resumo na aba "Conversation".
+    """
+    existing_id = None
+    try:
+        comments = github.list_issue_comments(owner, repo, pr_number)
+        existing_id = next(
+            (c["id"] for c in comments if c.get("body", "").startswith(SUMMARY_MARKER)),
+            None,
+        )
+    except Exception:
+        existing_id = None  # não conseguiu listar; cai no fallback de criar um novo
+
+    if existing_id is not None:
+        github.update_comment(owner, repo, existing_id, body)
+    else:
+        github.post_comment(owner, repo, pr_number, body)
 
 
 def _post_suggestion(
@@ -442,8 +467,8 @@ def review_pull_request(payload: ReviewRequest):
         comment_preview = format_summary_comment(all_results)
 
     try:
-        github.post_comment(
-            payload.owner, payload.repo, payload.pr_number, comment_preview
+        _post_or_update_summary_comment(
+            github, payload.owner, payload.repo, payload.pr_number, comment_preview
         )
     except Exception as exc:
         raise HTTPException(

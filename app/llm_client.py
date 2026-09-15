@@ -66,6 +66,13 @@ Você pode receber um "Contexto adicional" com duas informações extras:
   cobertos — foque em lacunas reais (casos de borda, erros, tipos inválidos)
   que ainda não parecem testados.
 
+IMPORTANTE sobre origem do problema: se o risco real está numa função
+AUXILIAR (dependência) usada pela função analisada — não na função analisada
+em si — deixe isso EXPLÍCITO no texto: diga qual função tem o problema de
+verdade (ex: "O problema está em validar_numero(), chamada por esta função:
+..."). O comentário fica ancorado na função analisada (é o que mudou no PR),
+então sem essa indicação fica ambíguo qual código o dev precisa editar.
+
 Responda SOMENTE em JSON válido, no seguinte formato, sem nenhum texto adicional
 e sem usar blocos de código markdown (```):
 
@@ -76,7 +83,7 @@ e sem usar blocos de código markdown (```):
     {"title": "string", "description": "string"}
   ],
   "suggested_improvements": [
-    {"issue": "string curta descrevendo o problema", "suggestion": "string explicando a correção, pode incluir um trecho de código"}
+    {"issue": "string curta descrevendo o problema (cite a função certa se for numa dependência)", "suggestion": "string explicando a correção, pode incluir um trecho de código"}
   ]
 }
 """
