@@ -1,4 +1,5 @@
 from app.comment_formatter import (
+    SUMMARY_MARKER,
     format_pr_comment,
     format_single_suggestion_comment,
     format_summary_comment,
@@ -100,3 +101,12 @@ def test_format_summary_comment_details_only_non_anchored_items():
     # Detalhe completo (com sugestões de teste) só deve aparecer pra quem não foi ancorado
     assert "bar()" in body
     assert "foo()" not in body
+
+
+def test_format_summary_comment_and_empty_pr_comment_carry_summary_marker():
+    """
+    O marcador precisa estar presente pra permitir editar o comentário no
+    lugar em pushes seguintes, em vez de empilhar um resumo por commit.
+    """
+    assert format_summary_comment([]).startswith(SUMMARY_MARKER)
+    assert format_pr_comment([]).startswith(SUMMARY_MARKER)
