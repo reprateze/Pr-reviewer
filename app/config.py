@@ -19,17 +19,26 @@ class Settings:
     # Chave da API do provedor de LLM (Anthropic, OpenAI, etc.)
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
 
-    # Nome do modelo a ser usado (Gemini, via Google AI Studio)
-    llm_model: str = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+    # Nome do modelo a ser usado (Gemini, via Google AI Studio).
+    #
+    # O padrão é um "flash-lite" por causa da cota: os modelos "flash"
+    # comuns dão 20 requisições por dia no plano gratuito, enquanto os
+    # "lite" dão 500 — a diferença entre analisar 10 e 250 PRs por dia.
+    #
+    # A versão é fixada de propósito (em vez de um alias tipo
+    # "flash-lite-latest"): um alias muda de modelo sozinho com o tempo, o
+    # que quebraria a reprodutibilidade dos resultados do experimento.
+    llm_model: str = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
 
     # Intervalo mínimo (em segundos) entre chamadas ao LLM, para respeitar o
-    # limite de requisições por minuto (RPM) do plano gratuito. Depende de
-    # qual modelo está configurado em LLM_MODEL — modelos "Flash Lite" têm
-    # RPM bem maior que os "Flash" comuns, então vale ajustar essa env var
-    # de acordo (ex: 4s para um modelo com 15 RPM, em vez dos 15s padrão
-    # calibrados para 5 RPM).
+    # limite de requisições por minuto (RPM) do plano gratuito.
+    #
+    # O padrão (4s) acompanha o modelo padrão, um "flash-lite" de 15 RPM —
+    # 4s dá 15 chamadas por minuto com folga. Se trocar LLM_MODEL para um
+    # "flash" comum (5 RPM), suba este valor para 15, senão as chamadas
+    # começam a tomar erro 429.
     llm_min_request_interval_seconds: int = int(
-        os.getenv("LLM_MIN_REQUEST_INTERVAL_SECONDS", "15")
+        os.getenv("LLM_MIN_REQUEST_INTERVAL_SECONDS", "4")
     )
 
     # Quantas funções (no máximo) são analisadas por arquivo alterado em um
