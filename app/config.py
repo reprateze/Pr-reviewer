@@ -71,7 +71,12 @@ class Settings:
     rag_enabled: bool = os.getenv("RAG_ENABLED", "false").lower() == "true"
 
     # Modelo de embeddings (cota separada da cota de geração de texto).
-    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-004")
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
+
+    # Tamanho do vetor. O modelo devolve 3072 por padrão, mas suporta truncar
+    # para tamanhos menores — 768 reduz em 4x o espaço no banco e o custo de
+    # comparar vetores, com perda pequena de precisão.
+    embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "768"))
 
     # Quantos trechos semelhantes são recuperados e enviados como contexto.
     rag_top_k: int = int(os.getenv("RAG_TOP_K", "3"))
