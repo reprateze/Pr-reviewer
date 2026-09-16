@@ -47,6 +47,22 @@ class Settings:
     # aqui esgota a cota mais rápido. Ajuste conforme a cota do modelo em uso.
     max_functions_per_pr: int = int(os.getenv("MAX_FUNCTIONS_PER_PR", "2"))
 
+    # Teto de tokens na resposta do LLM.
+    #
+    # Era 2048 fixo, e isso causou perda silenciosa de dado: modelos mais
+    # fortes escrevem respostas bem mais longas, o JSON vinha cortado no
+    # meio, o parser falhava e a análise era registrada como
+    # "desconhecido" — inclusive num caso em que o modelo tinha DETECTADO
+    # corretamente o defeito. O teto agora é folgado e configurável.
+    llm_max_output_tokens: int = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "8192"))
+
+    # Qual versão do prompt do sistema usar: "v1" (sugestão de teste, o
+    # original) ou "v2" (busca ativa de defeito). A v2 é padrão porque a v1,
+    # medida contra defeitos reais do histórico do scrapy, detectou 0 de 6 —
+    # descrevia a função em vez de procurar o erro. A v1 continua disponível
+    # para permitir refazer a comparação entre as duas.
+    prompt_version: str = os.getenv("PROMPT_VERSION", "v2")
+
     # Se arquivos de teste entram na ANÁLISE. Desligado por padrão: sugerir
     # casos de teste para uma função que já é um teste é desperdício de cota
     # (numa rodada real, metade das análises caiu em funções `test_*`).

@@ -69,6 +69,7 @@ def test_analisar_caso_usa_o_commit_pai_e_registra_a_correcao_real(tmp_path, mon
 
     llm = MagicMock()
     llm.model = "modelo-teste"
+    llm.prompt_version = "v2"
     llm.suggest_tests_for_function.return_value = {
         "risk_level": "alto",
         "risk_reason": "divisao sem checar lista vazia",
@@ -89,6 +90,9 @@ def test_analisar_caso_usa_o_commit_pai_e_registra_a_correcao_real(tmp_path, mon
     assert r.mensagem_da_correcao == "Fix division by zero on empty input"
     assert r.sha_da_correcao == "sha-fix"
     assert r.detectou is None  # ainda não julgado
+    # A versão do prompt fica registrada: sem ela não dá pra interpretar o
+    # dado depois, nem comparar versões entre si.
+    assert r.prompt_version == "v2"
 
     salvos = db.get_bug_cases("o", "r")
     assert len(salvos) == 1

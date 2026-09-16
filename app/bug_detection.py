@@ -13,7 +13,11 @@ a sugestão útil", respondida por quem construiu a ferramenta, com amostra
 pequena. Aqui a pergunta é "ela apontou o defeito que comprovadamente
 existia?" — verificável, e sem depender de ninguém gostar da resposta.
 """
-from app.code_analyzer import CodeAnalyzer, build_dependency_context
+from app.code_analyzer import (
+    CodeAnalyzer,
+    build_class_context,
+    build_dependency_context,
+)
 from app.config import settings
 from app.db import save_bug_case
 from app.models import BugDetectionCase
@@ -82,6 +86,10 @@ def analisar_caso(
 
             partes_de_contexto = []
 
+            classe = build_class_context(func, todas_do_arquivo)
+            if classe:
+                partes_de_contexto.append(classe)
+
             dependencias = build_dependency_context(func, todas_do_arquivo)
             if dependencias:
                 partes_de_contexto.append(
@@ -127,6 +135,7 @@ def analisar_caso(
                 function_name=func.name,
                 used_rag=use_rag,
                 llm_model=getattr(llm, "model", None),
+                prompt_version=getattr(llm, "prompt_version", None),
                 risk_level=analise.get("risk_level", "desconhecido"),
                 risk_reason=analise.get("risk_reason", ""),
                 suggested_tests=analise.get("suggested_tests", []),
@@ -135,8 +144,14 @@ def analisar_caso(
 
             try:
                 save_bug_case(registro)
-            except Exception:
-                pass  # falha de persistência não pode derrubar a rodada
+            except Exception as exc:
+                # Não derruba a rodada (seriam dezenas de casos perdidos),
+                # mas também não some em silêncio: aqui uma falha significa
+                # que uma chamada de LLM foi gasta e o resultado se perdeu.
+                print(
+                    f"[AVISO] falhou ao salvar {filename}::{func.name} — {exc}",
+                    flush=True,
+                )
 
             registros.append(registro)
 

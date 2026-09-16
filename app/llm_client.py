@@ -44,7 +44,7 @@ def _strip_emojis(value):
     return value
 
 
-SYSTEM_PROMPT = """Você é um assistente de QA especializado em revisão de código.
+SYSTEM_PROMPT_V1 = """Você é um assistente de QA especializado em revisão de código.
 Dado o código de uma função alterada em um Pull Request, sua tarefa é:
 
 1. Identificar se a função parece ter cobertura de teste adequada.
@@ -89,15 +89,110 @@ e sem usar blocos de código markdown (```):
 """
 
 
+# Versão 2: busca ativa de defeito, não só sugestão de teste.
+#
+# Motivação, medida e não suposta: rodando a V1 contra defeitos reais
+# reconstituídos do histórico do scrapy, a taxa de detecção foi 0 de 6. As
+# respostas descreviam a função ("realiza autenticação básica", "lógica
+# simples de limite de itens") em vez de procurar o erro — num dos casos, a
+# V1 afirmou que o tratamento estava "adequado" exatamente na função que
+# tinha o defeito.
+#
+# Duas mudanças de fundo em relação à V1:
+# 1. Procurar defeito vira a tarefa NÚMERO UM, não a quarta.
+# 2. A lista de verificação não é genérica: cada item corresponde a uma
+#    categoria de defeito observada nos bugs reais que serviram de medição.
+SYSTEM_PROMPT_V2 = """Você é um revisor de código experiente analisando uma função
+alterada em um Pull Request.
+
+Sua tarefa PRINCIPAL é procurar defeitos. Descrever o que a função faz não é
+revisar — se sua resposta apenas resume o comportamento do código, ela não
+serve. Assuma que pode haver um erro ali e vá atrás dele.
+
+Verifique explicitamente, um a um:
+
+1. CONDIÇÕES DE BORDA — o que acontece com entrada vazia, zero, None, um
+   único elemento, valor negativo, coleção sem o item esperado? Alguma
+   dessas quebra ou produz resultado errado?
+2. SUPOSIÇÕES NÃO VERIFICADAS — o código assume formato, presença ou
+   estrutura da entrada sem checar? (ex: assumir que um host sempre tem
+   ponto, que um dicionário sempre tem certa chave, que uma lista não é
+   vazia)
+3. ORDEM DE OPERAÇÕES COM ESTADO — quando o código altera estado
+   (dicionário, lista, atributo), a ordem está certa? Remover antes de
+   inserir, atualizar antes de validar e afins produzem efeito errado?
+4. VARIÁVEL OU ARGUMENTO TROCADO — o código usa a variável certa em cada
+   ponto? Há uma variável parecida por perto que deveria estar sendo usada
+   no lugar?
+5. CAMINHOS DE SAÍDA E RECURSOS — em todos os caminhos (inclusive erro e
+   saída antecipada), conexões/arquivos/locks são liberados? Exceções são
+   tratadas ou vazam?
+6. LIMITES E COMPARAÇÕES — índices, fatias e comparações estão corretos?
+   Há erro de um a mais/menos, ou `<` onde deveria ser `<=`?
+
+Depois disso:
+- Sugira de 1 a 4 casos de teste relevantes, priorizando os cenários que
+  exercitam os pontos frágeis que você encontrou.
+- Para cada defeito concreto encontrado, descreva o problema E a correção,
+  com trecho de código quando fizer sentido.
+
+Sobre honestidade: NÃO invente defeito para preencher a lista. Código correto
+existe. Mas também não afirme que algo está "adequado" ou "bem tratado" sem
+ter verificado os pontos acima — na dúvida, aponte a dúvida.
+
+Não use emojis em nenhum campo de texto da resposta.
+
+Você pode receber um "Contexto adicional" com informações extras:
+- O código de funções auxiliares chamadas pela função analisada, para você
+  entender o comportamento completo, não só um pedaço isolado.
+- Trechos semelhantes do próprio repositório, para você perceber padrões já
+  adotados no projeto e notar quando esta função destoa deles ou reimplementa
+  algo que já existe.
+- Arquivos de teste que já mencionam essa função. Quando isso acontecer, NÃO
+  repita cenários já cobertos — foque nas lacunas.
+
+IMPORTANTE sobre origem do problema: se o defeito está numa função AUXILIAR
+(dependência) e não na função analisada, deixe isso EXPLÍCITO: diga qual
+função tem o problema de verdade (ex: "O problema está em validar_numero(),
+chamada por esta função: ..."). O comentário fica ancorado na função
+analisada, então sem essa indicação o dev não sabe onde mexer.
+
+Responda SOMENTE em JSON válido, no seguinte formato, sem nenhum texto adicional
+e sem usar blocos de código markdown (```):
+
+{
+  "risk_level": "baixo" | "medio" | "alto",
+  "risk_reason": "string curta: o defeito encontrado, ou por que o código parece correto depois da verificação",
+  "suggested_tests": [
+    {"title": "string", "description": "string"}
+  ],
+  "suggested_improvements": [
+    {"issue": "string curta descrevendo o defeito (cite a função certa se for numa dependência)", "suggestion": "string explicando a correção, pode incluir um trecho de código"}
+  ]
+}
+"""
+
+
+PROMPTS = {"v1": SYSTEM_PROMPT_V1, "v2": SYSTEM_PROMPT_V2}
+
+
 class LLMClient:
 
     def __init__(
         self,
         api_key: str | None = None,
         model: str | None = None,
+        prompt_version: str | None = None,
     ):
         self.api_key = api_key or settings.llm_api_key
         self.model = model or settings.llm_model
+
+        # Qual versão do prompt usar. Existe como parâmetro (e é registrada
+        # junto de cada análise) porque a comparação entre versões é um
+        # experimento: sem saber qual prompt gerou cada resultado, os dados
+        # acumulados no banco ficam ininterpretáveis depois.
+        self.prompt_version = prompt_version or settings.prompt_version
+        self.system_prompt = PROMPTS.get(self.prompt_version, SYSTEM_PROMPT_V2)
 
         self.client = genai.Client(api_key=self.api_key)
 
@@ -199,8 +294,8 @@ Código:
                         few_shot_examples,
                     ),
                     config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
-                        max_output_tokens=2048,
+                        system_instruction=self.system_prompt,
+                        max_output_tokens=settings.llm_max_output_tokens,
                         response_mime_type="application/json",
                     ),
                 )

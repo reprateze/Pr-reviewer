@@ -23,7 +23,11 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from app.config import settings
-from app.code_analyzer import CodeAnalyzer, build_dependency_context
+from app.code_analyzer import (
+    CodeAnalyzer,
+    build_class_context,
+    build_dependency_context,
+)
 from app.dashboard import render_dashboard
 from app.diff_utils import commentable_lines, pick_comment_line
 from app.github_client import GitHubClient
@@ -154,6 +158,7 @@ def _post_suggestion(
     llm_model: str | None = None,
     code_hash: str | None = None,
     used_rag: bool = False,
+    prompt_version: str | None = None,
     dry_run: bool = False,
 ) -> int | None:
     """
@@ -202,6 +207,7 @@ def _post_suggestion(
                 llm_model=llm_model,
                 code_hash=code_hash,
                 used_rag=used_rag,
+                prompt_version=prompt_version,
             )
         )
     except Exception:
@@ -636,6 +642,13 @@ def analyze_pull_request(
             )
 
             context_parts = []
+
+            # Contexto da classe (cabeçalho + __init__) quando a função é
+            # método — senão ela chega solta, sem os atributos que usa.
+            class_context = build_class_context(func, functions)
+            if class_context:
+                context_parts.append(class_context)
+
             if dependency_context:
                 context_parts.append(
                     f"Funções auxiliares chamadas por esta função:\n{dependency_context}"
@@ -720,6 +733,7 @@ def analyze_pull_request(
                 llm_model=llm.model,
                 code_hash=code_hash,
                 used_rag=used_rag,
+                prompt_version=llm.prompt_version,
                 dry_run=dry_run,
             )
             all_results.append(

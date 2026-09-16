@@ -1,4 +1,8 @@
-from app.code_analyzer import CodeAnalyzer, build_dependency_context
+from app.code_analyzer import (
+    CodeAnalyzer,
+    build_class_context,
+    build_dependency_context,
+)
 
 
 SAMPLE_CODE = '''
@@ -171,3 +175,103 @@ def alvo():
 
     found = sum(name in context for name in ["a()", "b()", "c()", "d()"])
     assert found == 2
+
+CODIGO_COM_CLASSE = '''
+class LocalCache(OrderedDict):
+    """Cache com limite de tamanho."""
+
+    def __init__(self, limit=None):
+        super().__init__()
+        self.limit = limit
+
+    def __setitem__(self, key, value):
+        if self.limit is not None:
+            while len(self) >= self.limit:
+                self.popitem(last=False)
+        super().__setitem__(key, value)
+
+
+def funcao_solta(x):
+    return x
+'''
+
+
+def test_called_names_captura_chamadas_por_atributo():
+    """
+    Em código orientado a objetos quase toda chamada é `self.metodo()`.
+    Capturando só `ast.Name`, o contexto de dependência saía vazio — foi o
+    que aconteceu num caso real, com a IA recebendo o método sem nada do que
+    ele usava.
+    """
+    analyzer = CodeAnalyzer()
+    metodo = next(
+        f for f in analyzer.analyze_source(CODIGO_COM_CLASSE)
+        if f.name == "__setitem__"
+    )
+
+    assert "popitem" in metodo.called_names   # self.popitem(...)
+    assert "len" in metodo.called_names       # chamada simples, como antes
+    assert "__setitem__" not in metodo.called_names  # recursão direta ignorada
+
+
+def test_funcao_sabe_a_que_classe_pertence():
+    analyzer = CodeAnalyzer()
+    funcoes = {f.name: f for f in analyzer.analyze_source(CODIGO_COM_CLASSE)}
+
+    assert funcoes["__setitem__"].class_name == "LocalCache"
+    assert "class LocalCache(OrderedDict):" in funcoes["__setitem__"].class_header
+    # Função solta continua sem classe
+    assert funcoes["funcao_solta"].class_name is None
+
+
+def test_build_class_context_inclui_cabecalho_e_init():
+    """
+    O método precisa chegar à IA sabendo de quem herda e onde os atributos
+    que usa são definidos — `self.limit` vem do __init__, `popitem` da base.
+    """
+    analyzer = CodeAnalyzer()
+    funcoes = analyzer.analyze_source(CODIGO_COM_CLASSE)
+    metodo = next(f for f in funcoes if f.name == "__setitem__")
+
+    contexto = build_class_context(metodo, funcoes)
+
+    assert "class LocalCache(OrderedDict):" in contexto
+    assert "self.limit = limit" in contexto  # o __init__ veio junto
+
+
+def test_build_class_context_vazio_para_funcao_solta():
+    analyzer = CodeAnalyzer()
+    funcoes = analyzer.analyze_source(CODIGO_COM_CLASSE)
+    solta = next(f for f in funcoes if f.name == "funcao_solta")
+
+    assert build_class_context(solta, funcoes) == ""
+
+
+def test_class_header_reconhece_base_generica():
+    """
+    `class X(OrderedDict[K, V])` é ast.Subscript. Sem tratar isso, a classe
+    ia para a IA como `class X:` — escondendo a herança que explicava de
+    onde vinham os métodos usados (caso real da medição).
+    """
+    codigo = '''
+class LocalCache(OrderedDict[str, int]):
+    def metodo(self):
+        return self.popitem()
+'''
+    analyzer = CodeAnalyzer()
+    funcoes = analyzer.analyze_source(codigo)
+    metodo = next(f for f in funcoes if f.name == "metodo")
+
+    assert "OrderedDict" in metodo.class_header
+
+
+def test_class_header_reconhece_base_com_modulo():
+    codigo = '''
+class Handler(base.Protocol):
+    def run(self):
+        pass
+'''
+    analyzer = CodeAnalyzer()
+    metodo = analyzer.analyze_source(codigo)[0]
+
+    assert "Protocol" in metodo.class_header
