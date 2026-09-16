@@ -14,6 +14,7 @@ import csv
 import hashlib
 import hmac
 import io
+import random
 import re
 from contextlib import asynccontextmanager
 
@@ -44,7 +45,14 @@ from app.db import (
     save_feedback,
     save_suggestion,
 )
+from app.experiment import run_experiment
 from app.models import Suggestion
+from app.rag import (
+    format_retrieved_context,
+    index_repository,
+    retrieve_similar_chunks,
+)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -131,6 +139,8 @@ def _post_suggestion(
     commentable: set[int],
     llm_model: str | None = None,
     code_hash: str | None = None,
+    used_rag: bool = False,
+    dry_run: bool = False,
 ) -> int | None:
     """
     Tenta postar a sugestão como um comentário de review ancorado na linha
@@ -143,11 +153,15 @@ def _post_suggestion(
     possível ancorar (função não está de fato no diff) ou a API do GitHub
     rejeitou o comentário por qualquer motivo — nesses casos quem chamou
     deve incluir essa sugestão no comentário único de fallback.
+
+    Com `dry_run=True` nada é postado no GitHub, mas a sugestão continua
+    sendo salva no banco (é o modo usado para gerar dados do experimento
+    sobre repositórios de terceiros).
     """
     comment_id = None
     line = pick_comment_line(func.start_line, func.end_line, commentable)
 
-    if line is not None:
+    if line is not None and not dry_run:
         body = format_single_suggestion_comment(filename, func.name, analysis)
         try:
             comment = github.post_review_comment(
@@ -173,6 +187,7 @@ def _post_suggestion(
                 github_comment_id=comment_id,
                 llm_model=llm_model,
                 code_hash=code_hash,
+                used_rag=used_rag,
             )
         )
     except Exception:
@@ -213,6 +228,31 @@ class ReviewRequest(BaseModel):
     head_ref: str  # branch/commit do PR, usado para buscar o conteúdo dos arquivos
 
 
+class IndexRequest(BaseModel):
+    owner: str
+    repo: str
+    ref: str = "main"  # branch ou commit a indexar
+
+
+@app.post("/index")
+def index_repo(payload: IndexRequest):
+    """
+    Indexa (ou reindexa incrementalmente) um repositório para a recuperação
+    semântica. O /review já faz isso sozinho quando RAG_ENABLED=true, mas ter
+    o endpoint separado permite preparar um repositório grande de uma vez,
+    antes de começar o experimento, sem depender de abrir um PR.
+    """
+    if not settings.rag_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="RAG desabilitado. Defina RAG_ENABLED=true para usar a indexação.",
+        )
+
+    return index_repository(
+        GitHubClient(), payload.owner, payload.repo, payload.ref
+    )
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
@@ -242,13 +282,13 @@ def export_stats_csv():
     writer = csv.writer(buffer)
     writer.writerow([
         "id", "owner", "repo", "pr_number", "filename", "function_name",
-        "risk_level", "risk_reason", "llm_model", "rating", "feedback_reason",
-        "created_at", "feedback_at",
+        "risk_level", "risk_reason", "llm_model", "used_rag", "rating",
+        "feedback_reason", "created_at", "feedback_at",
     ])
     for s in suggestions:
         writer.writerow([
             s.id, s.owner, s.repo, s.pr_number, s.filename, s.function_name,
-            s.risk_level, s.risk_reason, s.llm_model, s.rating,
+            s.risk_level, s.risk_reason, s.llm_model, s.used_rag, s.rating,
             s.feedback_reason, s.created_at, s.feedback_at,
         ])
 
@@ -259,6 +299,94 @@ def export_stats_csv():
     )
 
 
+class ExperimentRequest(BaseModel):
+    owner: str
+    repo: str
+    # Teto baixo de propósito: cada PR custa chamadas ao LLM com intervalo
+    # entre elas, então um lote grande estoura o tempo de uma requisição HTTP.
+    # Para rodadas maiores existe o scripts/run_experiment.py, que roda local
+    # e aguenta horas.
+    max_prs: int = 5
+    state: str = "closed"
+
+
+@app.post("/experiment/run")
+def run_experiment_endpoint(payload: ExperimentRequest):
+    """
+    Roda a análise sobre PRs já existentes de um repositório, em dry-run
+    (nada é postado no GitHub), alternando as condições com e sem RAG.
+
+    Serve para lotes pequenos / testar o fluxo. Para gerar o volume real do
+    experimento, use `scripts/run_experiment.py`.
+    """
+    if payload.max_prs > 10:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "max_prs acima de 10 não cabe no tempo de uma requisição HTTP. "
+                "Use scripts/run_experiment.py para lotes maiores."
+            ),
+        )
+
+    return run_experiment(
+        GitHubClient(),
+        payload.owner,
+        payload.repo,
+        max_prs=payload.max_prs,
+        state=payload.state,
+    )
+
+
+@app.get("/experiment/blind-export.csv")
+def export_blind_evaluation_csv(limit: int = 60, seed: int = 42):
+    """
+    Exporta uma amostra de sugestões EMBARALHADA e SEM a coluna de condição
+    (com/sem RAG), para avaliação cega por terceiros.
+
+    O ponto é remover o viés: quem avalia não sabe qual sugestão teve
+    contexto recuperado do repositório, então não consegue (nem
+    inconscientemente) favorecer um dos grupos. A coluna `id` é mantida para
+    permitir recombinar as notas com a condição real depois — a chave fica
+    com quem conduz o experimento, não com quem avalia.
+
+    `seed` fixa o embaralhamento: a mesma chamada gera sempre a mesma ordem,
+    o que torna o procedimento reprodutível (exigência básica de método).
+    """
+    suggestions = get_all_suggestions()
+
+    amostra = list(suggestions)
+    random.Random(seed).shuffle(amostra)
+    amostra = amostra[:limit]
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "id", "arquivo", "funcao", "risco", "motivo",
+        "testes_sugeridos", "melhorias_sugeridas",
+        "avaliacao_util_1_a_5", "comentario_do_avaliador",
+    ])
+    for s in amostra:
+        testes = " | ".join(
+            f"{t.get('title', '')}: {t.get('description', '')}"
+            for t in (s.suggested_tests or [])
+        )
+        melhorias = " | ".join(
+            f"{m.get('issue', '')}: {m.get('suggestion', '')}"
+            for m in (s.suggested_improvements or [])
+        )
+        writer.writerow([
+            s.id, s.filename, s.function_name, s.risk_level, s.risk_reason,
+            testes, melhorias,
+            "", "",  # colunas em branco, preenchidas pelo avaliador
+        ])
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=avaliacao_cega.csv"},
+    )
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
     """Painel visual com o resumo do /stats + últimas sugestões geradas."""
@@ -266,11 +394,25 @@ def dashboard():
     return render_dashboard(get_stats(), recent)
 
 
-@app.post("/review")
-def review_pull_request(payload: ReviewRequest):
+def analyze_pull_request(
+    payload: ReviewRequest,
+    dry_run: bool = False,
+    use_rag: bool | None = None,
+) -> dict:
     """
-    Endpoint principal, chamado pela GitHub Action a cada PR aberto/atualizado.
+    Analisa um Pull Request de ponta a ponta: busca os arquivos alterados,
+    extrai as funções tocadas pelo diff, consulta a IA e registra tudo no
+    banco.
+
+    `dry_run=True` faz TODA a análise mas não posta nada no GitHub — é o que
+    permite rodar a ferramenta sobre PRs históricos de projetos de terceiros
+    (para gerar dados do experimento) sem escrever no repositório deles.
+
+    `use_rag` sobrepõe a configuração global de RAG só para esta execução —
+    necessário para alternar as duas condições dentro do mesmo experimento.
     """
+    rag_active = settings.rag_enabled if use_rag is None else use_rag
+
     github = GitHubClient()
     analyzer = CodeAnalyzer()
     llm = LLMClient()
@@ -287,6 +429,15 @@ def review_pull_request(payload: ReviewRequest):
         repo_tree = github.get_repo_tree(payload.owner, payload.repo, payload.head_ref)
     except Exception:
         repo_tree = []
+
+    # Indexação para RAG: incremental, então em repositório já indexado e
+    # estável isso custa praticamente nada (só relista a árvore e pula tudo
+    # que não mudou de hash).
+    if rag_active:
+        try:
+            index_repository(github, payload.owner, payload.repo, payload.head_ref)
+        except Exception:
+            pass  # indexação é enriquecimento; falha nela não impede a análise
 
     all_results = []  # toda função analisada nesta rodada, ancorada ou não
     functions_analyzed = 0
@@ -397,9 +548,34 @@ def review_pull_request(payload: ReviewRequest):
             if tests_summary:
                 context_parts.append(tests_summary)
 
-            extra_context = _build_extra_context(
-                context_parts, settings.max_extra_context_chars
-            )
+            # Recuperação semântica (RAG): trechos parecidos do repositório,
+            # pra IA enxergar padrões já adotados no projeto. Fica atrás da
+            # flag RAG_ENABLED pra permitir comparar as duas condições.
+            used_rag = False
+            if rag_active:
+                try:
+                    similar = retrieve_similar_chunks(
+                        payload.owner,
+                        payload.repo,
+                        func.source,
+                        exclude_function=func.name,
+                        exclude_filename=filename,
+                    )
+                    retrieved_context = format_retrieved_context(similar)
+                    if retrieved_context:
+                        context_parts.append(retrieved_context)
+                        used_rag = True
+                except Exception:
+                    pass  # RAG é enriquecimento; falha nele não pode parar a análise
+
+            # Com RAG ligado, o bloco recuperado tem orçamento próprio somado
+            # ao teto geral — senão ele seria cortado pelo limite existente e
+            # o RAG ficaria ligado sem efeito nenhum no prompt.
+            context_budget = settings.max_extra_context_chars
+            if used_rag:
+                context_budget += settings.rag_max_context_chars
+
+            extra_context = _build_extra_context(context_parts, context_budget)
 
             # Exemplos de sugestões bem avaliadas (few-shot), priorizando essa
             # MESMA função/arquivo antes de cair pra "mesmo repo" ou "global"
@@ -448,6 +624,8 @@ def review_pull_request(payload: ReviewRequest):
                 commentable,
                 llm_model=llm.model,
                 code_hash=code_hash,
+                used_rag=used_rag,
+                dry_run=dry_run,
             )
             all_results.append(
                 {
@@ -468,24 +646,35 @@ def review_pull_request(payload: ReviewRequest):
     else:
         comment_preview = format_summary_comment(all_results)
 
-    try:
-        _post_or_update_summary_comment(
-            github, payload.owner, payload.repo, payload.pr_number, comment_preview
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Erro ao postar comentário no PR: {exc}"
-        )
+    if not dry_run:
+        try:
+            _post_or_update_summary_comment(
+                github, payload.owner, payload.repo, payload.pr_number, comment_preview
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Erro ao postar comentário no PR: {exc}"
+            )
 
     anchored_count = sum(1 for item in all_results if item["anchored"])
 
     return {
         "status": "success",
+        "dry_run": dry_run,
+        "used_rag": rag_active,
         "functions_analyzed": functions_analyzed,
         "functions_with_inline_comment": anchored_count,
         "functions_skipped_unchanged": functions_skipped_unchanged,
         "comment_preview": comment_preview,
     }
+
+
+@app.post("/review")
+def review_pull_request(payload: ReviewRequest):
+    """
+    Endpoint principal, chamado pela GitHub Action a cada PR aberto/atualizado.
+    """
+    return analyze_pull_request(payload)
 
 
 @app.post("/webhook/github")

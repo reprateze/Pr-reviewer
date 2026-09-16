@@ -76,6 +76,46 @@ class GitHubClient:
             response.raise_for_status()
             return response.json()
 
+    def list_pull_requests(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "closed",
+        limit: int = 50,
+    ) -> list[dict]:
+        """
+        Lista Pull Requests do repositório, do mais recente para o mais antigo.
+
+        Usado pelo modo experimento, que roda a análise sobre PRs JÁ
+        EXISTENTES (normalmente já mergeados) para gerar volume de dados —
+        diferente do fluxo normal, que reage a um PR específico em tempo real.
+        """
+        url = f"{self.base_url}/repos/{owner}/{repo}/pulls"
+        pulls: list[dict] = []
+        page = 1
+
+        with httpx.Client(timeout=30.0) as client:
+            while len(pulls) < limit:
+                response = client.get(
+                    url,
+                    headers=self._headers(),
+                    params={
+                        "state": state,
+                        "per_page": min(100, limit - len(pulls)),
+                        "page": page,
+                        "sort": "updated",
+                        "direction": "desc",
+                    },
+                )
+                response.raise_for_status()
+                batch = response.json()
+                if not batch:
+                    break  # acabaram os PRs disponíveis
+                pulls.extend(batch)
+                page += 1
+
+        return pulls[:limit]
+
     def list_issue_comments(self, owner: str, repo: str, pr_number: int) -> list[dict]:
         """Lista os comentários gerais (issue comments) já postados no PR."""
         url = f"{self.base_url}/repos/{owner}/{repo}/issues/{pr_number}/comments"
