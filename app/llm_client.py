@@ -17,6 +17,22 @@ from app.config import settings
 from app.code_analyzer import FunctionInfo
 
 
+class RespostaIlegivel(Exception):
+    """
+    A IA respondeu, mas o texto não é JSON interpretável.
+
+    Existe para que essa falha entre no MESMO laço de retry dos erros de
+    rede. Antes, `_parse_response` devolvia um dicionário de fallback em vez
+    de levantar — como esse `return` estava dentro do `try`, o laço concluía
+    que a tentativa deu certo e encerrava. Resultado: a chamada era cobrada
+    da cota, a análise era descartada e nenhuma nova tentativa acontecia.
+    """
+
+    def __init__(self, raw_text: str):
+        super().__init__("Não foi possível interpretar a resposta da IA.")
+        self.raw_text = raw_text
+
+
 # Cobre a maioria dos emojis comuns (pictogramas, símbolos, dingbats, bandeiras
 # e o seletor de variação que às vezes vem grudado neles). O Gemini às vezes
 # solta emoji em campos de texto mesmo sem o prompt pedir — isso limpa depois
@@ -352,7 +368,14 @@ Código:
                 # ----------------------------------------
                 if is_overloaded:
                     if attempt < max_retries:
-                        wait_time = 5 * (attempt + 1)
+                        # Espera exponencial. O backoff linear anterior
+                        # (5s, 10s) esgotava as três tentativas em 15
+                        # segundos — curto demais para um pico de demanda do
+                        # lado do Google, que foi a causa mais frequente de
+                        # análise perdida na medição.
+                        wait_time = settings.llm_overload_backoff_seconds * (
+                            2 ** attempt
+                        )
                         print(
                             f"[LLM] Gemini indisponível (503). "
                             f"Aguardando {wait_time}s..."
@@ -363,10 +386,34 @@ Código:
                     break
 
                 # ----------------------------------------
+                # Resposta veio, mas ilegível
+                # ----------------------------------------
+                if isinstance(exc, RespostaIlegivel):
+                    if attempt < max_retries:
+                        print(
+                            "[LLM] Resposta não interpretável como JSON. "
+                            "Tentando novamente..."
+                        )
+                        continue
+
+                    break
+
+                # ----------------------------------------
                 # Outros erros
                 # ----------------------------------------
                 print(f"[LLM] Erro inesperado: {exc}")
                 break
+
+        if isinstance(last_error, RespostaIlegivel):
+            return {
+                "risk_level": "desconhecido",
+                "risk_reason": (
+                    "Não foi possível interpretar a resposta da IA após "
+                    f"{max_retries + 1} tentativas."
+                ),
+                "suggested_tests": [],
+                "raw_response": last_error.raw_text,
+            }
 
         return {
             "risk_level": "desconhecido",
@@ -405,9 +452,4 @@ Código:
             except json.JSONDecodeError:
                 pass
 
-        return {
-            "risk_level": "desconhecido",
-            "risk_reason": "Não foi possível interpretar a resposta da IA.",
-            "suggested_tests": [],
-            "raw_response": raw_text,
-        }
+        raise RespostaIlegivel(raw_text)

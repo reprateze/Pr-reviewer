@@ -322,3 +322,56 @@ def test_get_top_rated_examples_prioritizes_same_function_and_file(tmp_path, mon
     )
 
     assert [e.function_name for e in examples] == ["calcular_porcentagem"]
+
+
+def test_find_unchanged_suggestion_ignora_analise_que_falhou(tmp_path, monkeypatch):
+    """
+    Uma análise "desconhecido" não é resultado, é falha (503 do provedor,
+    resposta ilegível). Tratá-la como cache envenenava o PR: uma
+    indisponibilidade momentânea do Gemini gravava um registro vazio e, a
+    partir dali, todo novo push pulava aquela função para sempre — a única
+    saída era abrir outro PR. Aconteceu de verdade no QA-e2e-lab.
+    """
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    comum = dict(
+        owner="reprateze",
+        repo="QA-e2e-lab",
+        pr_number=2,
+        commit_sha="abc123",
+        filename="pages/base_page.py",
+        function_name="totais_batem",
+        code_hash="hash-identico",
+    )
+
+    db.save_suggestion(
+        Suggestion(
+            **comum,
+            risk_level="desconhecido",
+            risk_reason="Erro ao consultar IA: 503 UNAVAILABLE",
+            suggested_tests=[],
+        )
+    )
+
+    # Novo push, mesma função, mesmo código: tem que reanalisar.
+    assert db.find_unchanged_suggestion(
+        comum["owner"], comum["repo"], comum["pr_number"],
+        comum["filename"], comum["function_name"], comum["code_hash"],
+    ) is None
+
+    # Já uma análise que deu certo continua servindo de cache.
+    db.save_suggestion(
+        Suggestion(
+            **comum,
+            risk_level="alto",
+            risk_reason="Comparação direta entre floats",
+            suggested_tests=[],
+        )
+    )
+
+    encontrada = db.find_unchanged_suggestion(
+        comum["owner"], comum["repo"], comum["pr_number"],
+        comum["filename"], comum["function_name"], comum["code_hash"],
+    )
+    assert encontrada is not None
+    assert encontrada.risk_level == "alto"
