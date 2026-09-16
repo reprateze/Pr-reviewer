@@ -67,11 +67,16 @@ def index_repository(
     indexed_files = 0
     skipped_files = 0
     indexed_functions = 0
+    # Erros não podem derrubar a indexação inteira, mas também não podem
+    # sumir em silêncio: sem isso, uma chave errada ou um modelo inexistente
+    # devolveria "ok, 0 arquivos indexados" e não haveria como saber o motivo.
+    errors: list[str] = []
 
     for path in python_files:
         try:
             content = github.get_file_content(owner, repo, path, ref)
-        except Exception:
+        except Exception as exc:
+            errors.append(f"{path}: falha ao baixar o arquivo ({exc})")
             continue
 
         current_hash = _file_hash(content)
@@ -81,14 +86,13 @@ def index_repository(
 
         functions = analyzer.analyze_source(content)
         if not functions:
-            continue
+            continue  # arquivo sem função (só script/constantes) — normal
 
         sources = [f.source for f in functions]
         try:
             vectors = embedder.embed(sources)
-        except Exception:
-            # Falha de embedding (cota, rede) não pode derrubar o fluxo —
-            # esse arquivo simplesmente fica de fora do índice por enquanto.
+        except Exception as exc:
+            errors.append(f"{path}: falha ao gerar embedding ({exc})")
             continue
 
         chunks = [
@@ -110,10 +114,14 @@ def index_repository(
         indexed_functions += len(chunks)
 
     return {
-        "status": "ok",
+        "status": "ok" if not errors else "ok_com_erros",
+        "files_found": len(python_files),
         "files_indexed": indexed_files,
         "files_skipped_unchanged": skipped_files,
         "functions_indexed": indexed_functions,
+        # Só os primeiros erros, pra resposta não virar um despejo de log.
+        "errors": errors[:5],
+        "error_count": len(errors),
     }
 
 
@@ -166,7 +174,23 @@ def retrieve_similar_chunks(
         scored.append((chunk, score))
 
     scored.sort(key=lambda pair: pair[1], reverse=True)
-    return scored[:top_k]
+
+    # Descarta repetições do mesmo arquivo+função, mantendo só a de maior
+    # similaridade. Isso acontece de verdade quando o arquivo tem a mesma
+    # função definida mais de uma vez (sobra de refatoração, código legado):
+    # sem isso, o mesmo trecho ocuparia duas das poucas vagas de contexto.
+    vistos: set[tuple[str, str]] = set()
+    unicos: list[tuple[CodeChunk, float]] = []
+    for chunk, score in scored:
+        chave = (chunk.filename, chunk.function_name)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        unicos.append((chunk, score))
+        if len(unicos) >= top_k:
+            break
+
+    return unicos
 
 
 def format_retrieved_context(

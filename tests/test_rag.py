@@ -138,6 +138,40 @@ def test_retrieve_similar_chunks_exclui_a_propria_funcao(tmp_path, monkeypatch):
     assert [c.function_name for c, _ in resultados] == ["outra"]
 
 
+def test_retrieve_similar_chunks_deduplica_mesma_funcao(tmp_path, monkeypatch):
+    """
+    Arquivo com a mesma função definida duas vezes (sobra de refatoração)
+    não pode ocupar duas das poucas vagas de contexto com o mesmo trecho.
+    """
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    db.replace_file_chunks("o", "r", "a.py", [
+        CodeChunk(
+            owner="o", repo="r", filename="a.py", function_name="repetida",
+            content="def repetida(val): ...", embedding=[1.0, 0.0],
+            embedding_norm=1.0, file_hash="h",
+        ),
+        CodeChunk(
+            owner="o", repo="r", filename="a.py", function_name="repetida",
+            content="def repetida(valor): ...", embedding=[0.99, 0.01],
+            embedding_norm=1.0, file_hash="h",
+        ),
+        CodeChunk(
+            owner="o", repo="r", filename="b.py", function_name="outra",
+            content="def outra(): ...", embedding=[0.5, 0.5],
+            embedding_norm=1.0, file_hash="h",
+        ),
+    ])
+
+    embedder = MagicMock()
+    embedder.embed_one.return_value = [1.0, 0.0]
+
+    resultados = retrieve_similar_chunks("o", "r", "def x(): ...", top_k=3, embedder=embedder)
+
+    nomes = [c.function_name for c, _ in resultados]
+    assert nomes == ["repetida", "outra"]  # a segunda "repetida" foi descartada
+
+
 def test_retrieve_similar_chunks_sem_indice_retorna_vazio(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
 

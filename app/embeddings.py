@@ -13,20 +13,32 @@ centenas de MB de RAM, inviável num container pequeno como o do Render.
 import math
 
 from google import genai
+from google.genai import types
 
 from app.config import settings
 
 
 class EmbeddingClient:
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        dimensions: int | None = None,
+    ):
         self.api_key = api_key or settings.llm_api_key
         self.model = model or settings.embedding_model
+        self.dimensions = dimensions or settings.embedding_dimensions
         self.client = genai.Client(api_key=self.api_key)
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], task_type: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
         """
         Gera o embedding de vários textos numa chamada só (a API aceita lote,
         o que é bem mais barato em número de requisições do que uma por vez).
+
+        `task_type` diz à API para que o vetor vai servir. Usar
+        RETRIEVAL_DOCUMENT no que é indexado e RETRIEVAL_QUERY no que é
+        buscado melhora a qualidade da recuperação — os dois lados são
+        otimizados para se encontrarem, em vez de tratados como texto genérico.
 
         Retorna uma lista de vetores, na mesma ordem dos textos recebidos.
         """
@@ -36,13 +48,27 @@ class EmbeddingClient:
         response = self.client.models.embed_content(
             model=self.model,
             contents=texts,
+            config=types.EmbedContentConfig(
+                task_type=task_type,
+                # O modelo devolve 3072 dimensões por padrão. Truncar para um
+                # tamanho menor (o modelo suporta isso nativamente) reduz em
+                # 4x o armazenamento e o custo de comparar vetores, com perda
+                # pequena de precisão — troca vantajosa nesta escala.
+                output_dimensionality=self.dimensions,
+            ),
         )
         # `embeddings` e `values` são opcionais no tipo do SDK — tratar como
         # vetor vazio evita quebrar o fluxo se a API devolver algo incompleto.
         return [list(e.values or []) for e in (response.embeddings or [])]
 
-    def embed_one(self, text: str) -> list[float]:
-        vectors = self.embed([text])
+    def embed_one(self, text: str, task_type: str = "RETRIEVAL_QUERY") -> list[float]:
+        """
+        Embedding de um texto só. O padrão aqui é RETRIEVAL_QUERY porque o
+        uso típico é embedar a função sendo analisada para BUSCAR trechos
+        parecidos — o outro lado (o que está indexado) usa
+        RETRIEVAL_DOCUMENT.
+        """
+        vectors = self.embed([text], task_type=task_type)
         return vectors[0] if vectors else []
 
 
