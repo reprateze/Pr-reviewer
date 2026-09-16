@@ -12,7 +12,7 @@ from sqlalchemy import func as sql_func
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import settings
-from app.models import CodeChunk, Suggestion
+from app.models import BugDetectionCase, CodeChunk, Suggestion
 
 
 def _normalize_database_url(url: str) -> str:
@@ -331,6 +331,69 @@ def pr_already_analyzed(owner: str, repo: str, pr_number: int) -> bool:
             ).limit(1)
         ).first()
         return found is not None
+
+
+# --- Casos de defeito real (medição contra verdade de referência) ---
+
+
+def save_bug_case(caso: BugDetectionCase) -> BugDetectionCase:
+    with Session(engine) as session:
+        session.add(caso)
+        session.commit()
+        session.refresh(caso)
+        return caso
+
+
+def bug_case_ja_analisado(owner: str, repo: str, sha_da_correcao: str) -> bool:
+    """Permite retomar uma rodada interrompida sem reanalisar (e sem gastar cota)."""
+    with Session(engine) as session:
+        achado = session.exec(
+            select(BugDetectionCase.id).where(
+                BugDetectionCase.owner == owner,
+                BugDetectionCase.repo == repo,
+                BugDetectionCase.sha_da_correcao == sha_da_correcao,
+            ).limit(1)
+        ).first()
+        return achado is not None
+
+
+def get_bug_cases(owner: str | None = None, repo: str | None = None) -> list[BugDetectionCase]:
+    filtros = []
+    if owner:
+        filtros.append(BugDetectionCase.owner == owner)
+    if repo:
+        filtros.append(BugDetectionCase.repo == repo)
+
+    with Session(engine) as session:
+        return list(session.exec(
+            select(BugDetectionCase).where(*filtros).order_by(BugDetectionCase.created_at)
+        ).all())
+
+
+def get_deteccao_stats(owner: str | None = None, repo: str | None = None) -> dict:
+    """
+    Taxa de detecção de defeitos reais, separada por condição (com/sem RAG).
+
+    Só conta casos já julgados: enquanto `detectou` estiver vazio, aquele
+    caso ainda não tem resposta e entrar na conta inflaria ou deprimiria a
+    taxa artificialmente.
+    """
+    casos = get_bug_cases(owner, repo)
+
+    resultado = {"total_casos": len(casos), "por_condicao": {}}
+    for rotulo, flag in (("com_rag", True), ("sem_rag", False)):
+        grupo = [c for c in casos if c.used_rag is flag]
+        julgados = [c for c in grupo if c.detectou is not None]
+        detectados = [c for c in julgados if c.detectou]
+        resultado["por_condicao"][rotulo] = {
+            "analisados": len(grupo),
+            "julgados": len(julgados),
+            "detectados": len(detectados),
+            "taxa_deteccao": (
+                round(len(detectados) / len(julgados), 3) if julgados else None
+            ),
+        }
+    return resultado
 
 
 # --- Chunks indexados para recuperação semântica (RAG) ---
