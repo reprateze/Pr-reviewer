@@ -154,6 +154,41 @@ def test_export_csv_endpoint_returns_csv_with_seeded_data(tmp_path, monkeypatch)
     assert "foo" in response.text and "gemini-3.6-flash" in response.text
 
 
+def test_blind_export_nao_revela_a_condicao_do_experimento(tmp_path, monkeypatch):
+    """
+    O CSV de avaliação cega não pode conter a coluna used_rag — se o
+    avaliador souber quais sugestões tiveram contexto do repositório, a
+    comparação entre os grupos perde o valor.
+    """
+    from app.models import Suggestion
+
+    monkeypatch.setattr(db, "engine", create_engine(f"sqlite:///{tmp_path}/test.db"))
+
+    with TestClient(app) as client:
+        db.save_suggestion(
+            Suggestion(
+                owner="o", repo="r", pr_number=1, commit_sha="a",
+                filename="a.py", function_name="com_contexto", risk_level="alto",
+                risk_reason="-", used_rag=True,
+            )
+        )
+        db.save_suggestion(
+            Suggestion(
+                owner="o", repo="r", pr_number=2, commit_sha="a",
+                filename="b.py", function_name="sem_contexto", risk_level="baixo",
+                risk_reason="-", used_rag=False,
+            )
+        )
+        response = client.get("/experiment/blind-export.csv")
+
+    assert response.status_code == 200
+    assert "used_rag" not in response.text
+    assert "True" not in response.text and "False" not in response.text
+    # Mas mantém o id, que é a chave pra recombinar com a condição depois
+    assert "com_contexto" in response.text and "sem_contexto" in response.text
+    assert "avaliacao_util_1_a_5" in response.text
+
+
 def test_post_or_update_summary_comment_creates_when_none_exists():
     fake_github = MagicMock()
     fake_github.list_issue_comments.return_value = []

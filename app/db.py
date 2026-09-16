@@ -12,7 +12,7 @@ from sqlalchemy import func as sql_func
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import settings
-from app.models import Suggestion
+from app.models import CodeChunk, Suggestion
 
 
 def _normalize_database_url(url: str) -> str:
@@ -224,13 +224,114 @@ def get_stats() -> dict:
         with_feedback = sum(v for k, v in by_rating.items() if k != "sem_feedback")
         positive = by_rating.get("positivo", 0)
 
+        # Comparação entre as condições COM e SEM recuperação semântica
+        # (RAG) — é a métrica central do experimento: as sugestões que
+        # tiveram contexto do repositório foram mais aceitas que as que não
+        # tiveram? Só conta sugestões que receberam avaliação, já que sem
+        # feedback não há o que comparar.
+        rag_comparison = {}
+        for label, flag in (("com_rag", True), ("sem_rag", False)):
+            avaliadas = session.exec(
+                select(sql_func.count())
+                .select_from(Suggestion)
+                .where(Suggestion.used_rag == flag, Suggestion.rating.is_not(None))
+            ).one()
+            positivas = session.exec(
+                select(sql_func.count())
+                .select_from(Suggestion)
+                .where(Suggestion.used_rag == flag, Suggestion.rating == "positivo")
+            ).one()
+            rag_comparison[label] = {
+                "avaliadas": avaliadas,
+                "positivas": positivas,
+                "taxa_aprovacao": round(positivas / avaliadas, 3) if avaliadas else None,
+            }
+
         return {
             "total_suggestions": total,
             "by_risk_level": by_risk,
             "by_rating": by_rating,
             "by_llm_model": by_model,
+            "rag_comparison": rag_comparison,
             "feedback_rate": round(with_feedback / total, 3) if total else 0,
             "positive_rate_among_rated": (
                 round(positive / with_feedback, 3) if with_feedback else None
             ),
         }
+
+
+def pr_already_analyzed(owner: str, repo: str, pr_number: int) -> bool:
+    """
+    Se já existe alguma sugestão salva para esse PR. Usado pelo modo
+    experimento para retomar de onde parou, sem reprocessar (e sem gastar
+    cota de LLM de novo) o que já foi analisado numa rodada anterior.
+    """
+    with Session(engine) as session:
+        found = session.exec(
+            select(Suggestion.id).where(
+                Suggestion.owner == owner,
+                Suggestion.repo == repo,
+                Suggestion.pr_number == pr_number,
+            ).limit(1)
+        ).first()
+        return found is not None
+
+
+# --- Chunks indexados para recuperação semântica (RAG) ---
+
+
+def get_indexed_file_hashes(owner: str, repo: str) -> dict[str, str]:
+    """
+    Mapa {arquivo: hash} do que já está indexado para esse repositório.
+    Usado para pular o reprocessamento de arquivos que não mudaram desde a
+    última indexação (economiza chamadas de embedding e da API do GitHub).
+    """
+    with Session(engine) as session:
+        rows = session.exec(
+            select(CodeChunk.filename, CodeChunk.file_hash)
+            .where(CodeChunk.owner == owner, CodeChunk.repo == repo)
+            .distinct()
+        ).all()
+        return {filename: file_hash for filename, file_hash in rows}
+
+
+def replace_file_chunks(
+    owner: str, repo: str, filename: str, chunks: list[CodeChunk]
+) -> None:
+    """
+    Substitui os chunks de UM arquivo: apaga os antigos e grava os novos.
+    Substituir (em vez de acrescentar) evita acumular versões velhas de uma
+    função que mudou.
+    """
+    with Session(engine) as session:
+        existing = session.exec(
+            select(CodeChunk).where(
+                CodeChunk.owner == owner,
+                CodeChunk.repo == repo,
+                CodeChunk.filename == filename,
+            )
+        ).all()
+        for row in existing:
+            session.delete(row)
+
+        for chunk in chunks:
+            session.add(chunk)
+
+        session.commit()
+
+
+def get_repo_chunks(owner: str, repo: str) -> list[CodeChunk]:
+    """Todos os chunks indexados de um repositório (usado na busca por similaridade)."""
+    with Session(engine) as session:
+        return list(session.exec(
+            select(CodeChunk).where(CodeChunk.owner == owner, CodeChunk.repo == repo)
+        ).all())
+
+
+def count_repo_chunks(owner: str, repo: str) -> int:
+    with Session(engine) as session:
+        return session.exec(
+            select(sql_func.count())
+            .select_from(CodeChunk)
+            .where(CodeChunk.owner == owner, CodeChunk.repo == repo)
+        ).one()
