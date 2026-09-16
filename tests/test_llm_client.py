@@ -116,3 +116,110 @@ def test_min_request_interval_comes_from_settings(monkeypatch):
     client = LLMClient(api_key="fake-key")
 
     assert client.min_request_interval == 4
+
+
+# --- Resiliência a falhas da camada de LLM -------------------------------
+#
+# Numa rodada real no QA-e2e-lab, 4 de 8 análises voltaram "desconhecido":
+# três por 503 (sobrecarga do Gemini) e uma por resposta ilegível. Cada uma
+# dessas consumiu cota e não produziu nada. Os testes abaixo cobrem os dois
+# caminhos de recuperação.
+
+
+class _RespostaFake:
+    def __init__(self, text):
+        self.text = text
+
+
+def _funcao_de_exemplo():
+    from app.code_analyzer import CodeAnalyzer
+
+    return CodeAnalyzer().analyze_source("def somar(a, b):\n    return a + b")[0]
+
+
+def _cliente_com_respostas(monkeypatch, respostas):
+    """
+    LLMClient cujo generate_content devolve (ou levanta) os itens de
+    `respostas`, um por chamada. Sem espera real entre tentativas.
+    """
+    client = LLMClient(api_key="fake-key")
+
+    chamadas = []
+
+    def fake_generate_content(**kwargs):
+        chamadas.append(kwargs)
+        item = respostas[len(chamadas) - 1]
+        if isinstance(item, Exception):
+            raise item
+        return _RespostaFake(item)
+
+    monkeypatch.setattr(
+        client.client.models, "generate_content", fake_generate_content
+    )
+    monkeypatch.setattr(client, "_wait_for_rate_limit", lambda: None)
+
+    return client, chamadas
+
+
+JSON_VALIDO = '{"risk_level": "alto", "risk_reason": "x", "suggested_tests": []}'
+
+
+def test_resposta_ilegivel_e_retentada(monkeypatch):
+    """
+    Antes, `_parse_response` DEVOLVIA o fallback em vez de levantar. Como
+    esse return acontecia dentro do `try`, o laço de retry concluía que a
+    tentativa tinha dado certo e parava — a cota era gasta e a análise,
+    descartada, sem nenhuma nova tentativa.
+    """
+    esperas = []
+    monkeypatch.setattr(llm_client_module.time, "sleep", esperas.append)
+
+    client, chamadas = _cliente_com_respostas(
+        monkeypatch, ["isso não é json", "nem isso", JSON_VALIDO]
+    )
+
+    resultado = client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert resultado["risk_level"] == "alto"
+    assert len(chamadas) == 3
+
+
+def test_resposta_ilegivel_esgotada_preserva_o_texto_bruto(monkeypatch):
+    """
+    Esgotadas as tentativas, o resultado ainda precisa carregar a resposta
+    crua — é o que permite descobrir DEPOIS por que o parse falhou (JSON
+    cortado por limite de tokens? texto solto?).
+    """
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _: None)
+
+    client, chamadas = _cliente_com_respostas(
+        monkeypatch, ["lixo", "lixo", "lixo"]
+    )
+
+    resultado = client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert resultado["risk_level"] == "desconhecido"
+    assert resultado["raw_response"] == "lixo"
+    assert len(chamadas) == 3
+
+
+def test_backoff_do_503_cresce_exponencialmente(monkeypatch):
+    """
+    O backoff linear anterior (5s, 10s) esgotava as três tentativas em 15
+    segundos — pouco para um pico de demanda do lado do Google, que foi a
+    causa mais frequente de análise perdida na medição.
+    """
+    esperas = []
+    monkeypatch.setattr(llm_client_module.time, "sleep", esperas.append)
+    monkeypatch.setattr(
+        llm_client_module.settings, "llm_overload_backoff_seconds", 10
+    )
+
+    erro = Exception("503 UNAVAILABLE: model is overloaded")
+    client, chamadas = _cliente_com_respostas(monkeypatch, [erro, erro, JSON_VALIDO])
+
+    resultado = client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert resultado["risk_level"] == "alto"
+    assert esperas == [10, 20]
+    assert len(chamadas) == 3

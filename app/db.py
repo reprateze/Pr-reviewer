@@ -62,6 +62,12 @@ def find_unchanged_suggestion(
     Procura uma análise já feita, neste mesmo PR, para essa função com esse
     exato código (mesmo hash) — usado para pular a chamada ao LLM quando um
     novo push no PR não alterou de fato essa função (economiza cota).
+
+    Análises com risco "desconhecido" NÃO contam: elas não são resultado, são
+    falha (503 do provedor, resposta ilegível). Considerá-las envenenava o
+    cache — uma indisponibilidade momentânea do Gemini gravava um registro
+    vazio e, a partir dali, todo novo push pulava aquela função para sempre,
+    sem jamais tentar de novo. A única saída era abrir outro PR.
     """
     with Session(engine) as session:
         statement = select(Suggestion).where(
@@ -71,6 +77,7 @@ def find_unchanged_suggestion(
             Suggestion.filename == filename,
             Suggestion.function_name == function_name,
             Suggestion.code_hash == code_hash,
+            Suggestion.risk_level != "desconhecido",
         )
         return session.exec(statement).first()
 
