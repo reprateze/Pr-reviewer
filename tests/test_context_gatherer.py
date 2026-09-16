@@ -1,14 +1,27 @@
 from unittest.mock import MagicMock
 
-from app.context_gatherer import ContextGatherer, _looks_like_test_file
+from app.context_gatherer import ContextGatherer, looks_like_test_file
+
+
+def test_looks_like_test_file_reconhece_convencao_de_pasta():
+    """
+    Projetos reais têm arquivos de apoio dentro de tests/ que não seguem o
+    padrão de nome — conftest.py, helpers.py. Eles também são teste.
+    """
+    assert looks_like_test_file("tests/conftest.py") is True
+    assert looks_like_test_file("tests/helpers.py") is True
+    assert looks_like_test_file("test/utils.py") is True
+    # "test" como parte de outro nome de pasta não conta
+    assert looks_like_test_file("src/testing_utils/core.py") is False
+    assert looks_like_test_file("src/latest/core.py") is False
 
 
 def test_looks_like_test_file_recognizes_common_patterns():
-    assert _looks_like_test_file("tests/test_calculadora.py") is True
-    assert _looks_like_test_file("calculadora_test.py") is True
-    assert _looks_like_test_file("calculadora.py") is False
-    assert _looks_like_test_file("app/main.py") is False
-    assert _looks_like_test_file("README.md") is False
+    assert looks_like_test_file("tests/test_calculadora.py") is True
+    assert looks_like_test_file("calculadora_test.py") is True
+    assert looks_like_test_file("calculadora.py") is False
+    assert looks_like_test_file("app/main.py") is False
+    assert looks_like_test_file("README.md") is False
 
 
 def test_find_related_tests_returns_matching_files():
