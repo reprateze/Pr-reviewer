@@ -73,6 +73,10 @@ class Suggestion(SQLModel, table=True):
     feedback_reason: str | None = None
     feedback_at: datetime | None = None
 
+    # Versão do prompt do sistema usada nesta análise (ver PROMPTS em
+    # llm_client.py) — necessário para interpretar os dados depois.
+    prompt_version: str | None = None
+
     # Se esta análise usou contexto recuperado por embeddings (RAG) ou não.
     # Guardado por sugestão pra permitir comparar as duas condições no
     # experimento — sem isso não dá pra saber, olhando o banco depois, quais
@@ -111,6 +115,10 @@ class BugDetectionCase(SQLModel, table=True):
 
     used_rag: bool = False
     llm_model: str | None = None
+    # Versão do prompt usada. Sem isso, comparar resultados de épocas
+    # diferentes fica impossível: não dá pra saber se a diferença veio da
+    # condição testada ou de uma mudança de prompt no meio do caminho.
+    prompt_version: str | None = None
 
     risk_level: str
     risk_reason: str

@@ -82,6 +82,15 @@ def main():
         print(f"  [{int(time.time()-inicio):>4}s] {marcador} | "
               f"{caso['mensagem'][:48]:<48} | {riscos}", flush=True)
 
+        # "desconhecido" significa que a resposta do modelo não pôde ser
+        # interpretada — normalmente JSON cortado por limite de tokens. Isso
+        # já descartou uma detecção correta uma vez, então tem que ser
+        # barulhento em vez de virar só mais uma linha no log.
+        falhas = sum(1 for r in registros if r.risk_level == "desconhecido")
+        if falhas:
+            print(f"       [ATENÇÃO] {falhas} resposta(s) não interpretável(is) — "
+                  f"análise perdida. Verifique LLM_MAX_OUTPUT_TOKENS.", flush=True)
+
     print(f"\n{analisados} análises registradas em {int(time.time()-inicio)}s")
     print("\nSituação atual:")
     for chave, valor in get_deteccao_stats(args.owner, args.repo).items():
