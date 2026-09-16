@@ -80,6 +80,51 @@ class Suggestion(SQLModel, table=True):
     used_rag: bool = False
 
 
+class BugDetectionCase(SQLModel, table=True):
+    """
+    Um defeito REAL reconstituído do histórico do projeto, junto com o que a
+    ferramenta disse sobre ele.
+
+    Fica em tabela separada de `Suggestion` de propósito: aqui não existe
+    Pull Request, não existe comentário postado e não existe dev avaliando —
+    é medição contra verdade de referência, natureza diferente do uso normal.
+
+    O campo `detectou` começa vazio e é preenchido depois, na avaliação:
+    a ferramenta apontou o mesmo problema que a correção real resolveu?
+    É a única pergunta que importa aqui, e ela tem resposta verificável —
+    diferente de "você achou a sugestão útil?", que é opinião.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+
+    owner: str = Field(index=True)
+    repo: str = Field(index=True)
+
+    # O commit que corrigiu o defeito (a prova de que ele existia) e o pai,
+    # onde o defeito ainda está presente e que foi efetivamente analisado.
+    sha_da_correcao: str = Field(index=True)
+    sha_com_bug: str
+    mensagem_da_correcao: str
+
+    filename: str
+    function_name: str
+
+    used_rag: bool = False
+    llm_model: str | None = None
+
+    risk_level: str
+    risk_reason: str
+    suggested_tests: list = Field(default_factory=list, sa_column=Column(JSON))
+    suggested_improvements: list = Field(default_factory=list, sa_column=Column(JSON))
+
+    # Preenchido na avaliação: True = apontou o mesmo defeito, False = não
+    # apontou, None = ainda não julgado.
+    detectou: bool | None = None
+    nota_do_avaliador: str | None = None
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class CodeChunk(SQLModel, table=True):
     """
     Um trecho de código do repositório, indexado com seu embedding, para

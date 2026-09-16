@@ -40,6 +40,8 @@ from app.db import (
     find_unchanged_suggestion,
     get_all_suggestions,
     get_analyzed_repos,
+    get_bug_cases,
+    get_deteccao_stats,
     get_stats,
     get_top_rated_examples,
     init_db,
@@ -414,6 +416,59 @@ def export_blind_evaluation_csv(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=avaliacao_cega.csv"},
     )
+
+
+@app.get("/experiment/bug-cases.csv")
+def export_bug_cases_csv(owner: str | None = None, repo: str | None = None):
+    """
+    Planilha de julgamento dos defeitos reais: para cada caso, o que a
+    ferramenta apontou ao lado da correção que de fato foi feita no projeto.
+
+    A coluna `detectou` vem em branco de propósito — é ela que o avaliador
+    preenche (sim/não) comparando as duas colunas. É esse preenchimento que
+    converte a análise em taxa de detecção medida contra verdade de
+    referência, em vez de "o autor achou a sugestão boa".
+
+    A condição (com/sem RAG) NÃO aparece: quem julga não pode saber qual
+    grupo está avaliando, senão a comparação entre os dois perde o sentido.
+    """
+    casos = get_bug_cases(owner=owner, repo=repo)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "id", "arquivo", "funcao",
+        "correcao_real_feita_no_projeto",
+        "risco_apontado", "motivo_apontado", "melhorias_apontadas",
+        "detectou_sim_ou_nao", "nota_do_avaliador",
+    ])
+    for c in casos:
+        melhorias = " | ".join(
+            f"{m.get('issue', '')}: {m.get('suggestion', '')}"
+            for m in (c.suggested_improvements or [])
+        )
+        writer.writerow([
+            c.id, c.filename, c.function_name,
+            c.mensagem_da_correcao,
+            c.risk_level, c.risk_reason, melhorias,
+            "", "",
+        ])
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=casos_de_defeito.csv"},
+    )
+
+
+@app.get("/experiment/deteccao")
+def deteccao_stats(owner: str | None = None, repo: str | None = None):
+    """
+    Taxa de detecção de defeitos reais, por condição (com/sem RAG).
+    Conta só os casos já julgados — enquanto `detectou` estiver vazio, o
+    caso não tem resposta e entrar na conta distorceria a taxa.
+    """
+    return get_deteccao_stats(owner=owner, repo=repo)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
