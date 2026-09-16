@@ -48,6 +48,15 @@ def _rating_badge(rating: str | None) -> str:
     return f'<span class="badge" style="background:{color}22;color:{color}">{_esc(_RATING_LABELS.get(key, key))}</span>'
 
 
+def _format_rate(data: dict) -> str:
+    """Taxa de aprovação com o denominador junto: '80% (4/5)' ou '—' se não há avaliação."""
+    taxa = data.get("taxa_aprovacao")
+    avaliadas = data.get("avaliadas", 0)
+    if taxa is None or not avaliadas:
+        return "—"
+    return f"{taxa * 100:.0f}% ({data.get('positivas', 0)}/{avaliadas})"
+
+
 def _recent_rows(recent: list[Suggestion]) -> str:
     if not recent:
         return '<tr><td colspan="6" class="empty">Nenhuma sugestão gerada ainda.</td></tr>'
@@ -77,6 +86,18 @@ def render_dashboard(stats: dict, recent: list[Suggestion]) -> str:
     model_rows = "".join(
         f'<div class="model-row"><span>{_esc(model or "desconhecido")}</span><strong>{count}</strong></div>'
         for model, count in sorted(by_model.items(), key=lambda kv: -kv[1])
+    ) or '<div class="empty">Sem dados ainda.</div>'
+
+    # Comparação entre as duas condições do experimento. Mostra a taxa de
+    # aprovação e, entre parênteses, quantas sugestões sustentam esse número
+    # — sem o denominador visível, uma taxa de 100% em cima de 2 avaliações
+    # parece tão sólida quanto uma em cima de 200.
+    rag_comparison = stats.get("rag_comparison", {})
+    rag_labels = {"com_rag": "Com RAG", "sem_rag": "Sem RAG"}
+    rag_rows = "".join(
+        f'<div class="model-row"><span>{_esc(rag_labels.get(key, key))}</span>'
+        f'<strong>{_format_rate(data)}</strong></div>'
+        for key, data in rag_comparison.items()
     ) or '<div class="empty">Sem dados ainda.</div>'
 
     return f"""<!doctype html>
@@ -154,9 +175,15 @@ def render_dashboard(stats: dict, recent: list[Suggestion]) -> str:
       </div>
     </div>
 
-    <div class="panel" style="margin-bottom:16px">
-      <h2>Modelos LLM usados</h2>
-      {model_rows}
+    <div class="grid2">
+      <div class="panel">
+        <h2>Modelos LLM usados</h2>
+        {model_rows}
+      </div>
+      <div class="panel">
+        <h2>Com RAG vs. sem RAG</h2>
+        {rag_rows}
+      </div>
     </div>
 
     <div class="panel">

@@ -1,5 +1,15 @@
-from app.dashboard import render_dashboard
+from app.dashboard import _format_rate, render_dashboard
 from app.models import Suggestion
+
+
+def test_format_rate_mostra_denominador():
+    """
+    A taxa sozinha engana: 100% em cima de 2 avaliações parece tão forte
+    quanto 100% em cima de 200. O denominador precisa aparecer.
+    """
+    assert _format_rate({"taxa_aprovacao": 0.857, "positivas": 6, "avaliadas": 7}) == "86% (6/7)"
+    assert _format_rate({"taxa_aprovacao": None, "avaliadas": 0}) == "—"
+    assert _format_rate({}) == "—"
 
 
 def _suggestion(**overrides) -> Suggestion:

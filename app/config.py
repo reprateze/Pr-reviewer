@@ -63,5 +63,29 @@ class Settings:
     # Configurado ao criar o webhook em Settings > Webhooks do repositório.
     github_webhook_secret: str = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 
+    # --- RAG (recuperação contextual por embeddings) ---
+
+    # Liga/desliga a recuperação semântica de trechos do repositório. Fica
+    # como flag justamente para permitir comparar as MESMAS análises com e
+    # sem RAG (o experimento do TCC precisa dos dois cenários).
+    rag_enabled: bool = os.getenv("RAG_ENABLED", "false").lower() == "true"
+
+    # Modelo de embeddings (cota separada da cota de geração de texto).
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-004")
+
+    # Quantos trechos semelhantes são recuperados e enviados como contexto.
+    rag_top_k: int = int(os.getenv("RAG_TOP_K", "3"))
+
+    # Orçamento de caracteres SÓ para o bloco recuperado por RAG, somado ao
+    # max_extra_context_chars quando o RAG está ligado. Sem esse orçamento
+    # próprio, os trechos recuperados seriam cortados pelo teto geral e o
+    # RAG ficaria ligado "no papel", sem efeito real no prompt.
+    rag_max_context_chars: int = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "1500"))
+
+    # Teto de arquivos .py indexados por repositório. Cada arquivo custa 1
+    # chamada à API do GitHub + N chamadas de embedding (uma por função),
+    # então em repositório grande isso precisa de limite.
+    rag_max_files_to_index: int = int(os.getenv("RAG_MAX_FILES_TO_INDEX", "50"))
+
 
 settings = Settings()

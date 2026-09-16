@@ -72,3 +72,53 @@ class Suggestion(SQLModel, table=True):
     rating: str | None = None  # "positivo" | "negativo"
     feedback_reason: str | None = None
     feedback_at: datetime | None = None
+
+    # Se esta análise usou contexto recuperado por embeddings (RAG) ou não.
+    # Guardado por sugestão pra permitir comparar as duas condições no
+    # experimento — sem isso não dá pra saber, olhando o banco depois, quais
+    # sugestões tiveram contexto semântico e quais não.
+    used_rag: bool = False
+
+
+class CodeChunk(SQLModel, table=True):
+    """
+    Um trecho de código do repositório, indexado com seu embedding, para
+    recuperação semântica (RAG).
+
+    Cada chunk é UMA FUNÇÃO inteira (não um corte arbitrário a cada N
+    tokens): a função é a unidade semântica natural do código, e o projeto
+    já tem um extrator de funções via AST (ver code_analyzer.py). Cortar a
+    cada N tokens partiria funções no meio e pioraria a recuperação.
+
+    O embedding é guardado como JSON (lista de floats) em vez de um tipo
+    vetorial nativo (pgvector). Motivo: funciona igual em SQLite (testes e
+    dev local) e Postgres (produção), sem extensão nem código específico por
+    backend. Na escala deste projeto — alguns milhares de chunks — calcular
+    a similaridade em Python é rápido o suficiente. Se um dia o volume
+    crescer muito (dezenas de milhares de chunks por repositório), aí vale
+    migrar para pgvector com índice HNSW.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+
+    owner: str = Field(index=True)
+    repo: str = Field(index=True)
+    filename: str
+    function_name: str
+
+    # Código-fonte da função, que é o texto efetivamente embedado.
+    content: str
+
+    # Vetor do embedding, como lista de floats.
+    embedding: list = Field(default_factory=list, sa_column=Column(JSON))
+
+    # Norma euclidiana do vetor, pré-calculada na indexação — evita
+    # recalcular a cada consulta de similaridade (é o denominador do cosseno).
+    embedding_norm: float = 0.0
+
+    # Hash do conteúdo do ARQUIVO inteiro no momento da indexação. Permite
+    # pular o reprocessamento (e as chamadas de embedding) de arquivos que
+    # não mudaram desde a última vez.
+    file_hash: str = Field(index=True)
+
+    indexed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
