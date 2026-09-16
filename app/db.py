@@ -177,30 +177,75 @@ def get_top_rated_examples(
         return examples
 
 
-def get_all_suggestions() -> list[Suggestion]:
+def get_all_suggestions(
+    owner: str | None = None, repo: str | None = None
+) -> list[Suggestion]:
     """
-    Todas as sugestões já geradas, da mais antiga pra mais nova. Usado pelo
-    export em CSV — pra um dataset pequeno como o de um experimento de TCC,
-    trazer tudo de uma vez é simples e suficiente (sem paginação).
+    Sugestões geradas, da mais antiga pra mais nova, opcionalmente filtradas
+    por repositório. Usado pelo export em CSV — pra um dataset pequeno como
+    o de um experimento de TCC, trazer tudo de uma vez é simples e
+    suficiente (sem paginação).
     """
     with Session(engine) as session:
-        statement = select(Suggestion).order_by(Suggestion.created_at)
+        statement = (
+            select(Suggestion)
+            .where(*_scope_filters(owner, repo))
+            .order_by(Suggestion.created_at)
+        )
         return list(session.exec(statement).all())
 
 
-def get_stats() -> dict:
+def _scope_filters(owner: str | None, repo: str | None) -> list:
     """
-    Resumo agregado de todas as sugestões geradas — pensado para alimentar
+    Condições de filtro por repositório, para reaproveitar nas várias
+    consultas de estatística. Sem isso, os números do experimento (rodado
+    sobre um projeto de terceiros) ficariam misturados com os da
+    demonstração — que têm natureza bem diferente.
+    """
+    filtros = []
+    if owner:
+        filtros.append(Suggestion.owner == owner)
+    if repo:
+        filtros.append(Suggestion.repo == repo)
+    return filtros
+
+
+def get_analyzed_repos() -> list[dict]:
+    """Repositórios que já têm sugestões, com a contagem de cada um."""
+    with Session(engine) as session:
+        rows = session.exec(
+            select(Suggestion.owner, Suggestion.repo, sql_func.count())
+            .group_by(Suggestion.owner, Suggestion.repo)
+            .order_by(sql_func.count().desc())
+        ).all()
+        return [
+            {"owner": owner, "repo": repo, "sugestoes": total}
+            for owner, repo, total in rows
+        ]
+
+
+def get_stats(owner: str | None = None, repo: str | None = None) -> dict:
+    """
+    Resumo agregado das sugestões geradas — pensado para alimentar
     diretamente a análise/experimento do TCC (comparação de qualidade entre
     modelos, taxa de aprovação dos devs, distribuição de risco) sem precisar
     exportar dados manualmente da Supabase.
+
+    Aceita filtro por repositório: sem ele, os dados do experimento (rodado
+    sobre projeto de terceiros, em dry-run) se somariam aos da demonstração
+    (auto-avaliados, com comentário postado), que não são comparáveis.
     """
+    filtros = _scope_filters(owner, repo)
+
     with Session(engine) as session:
-        total = session.exec(select(sql_func.count()).select_from(Suggestion)).one()
+        total = session.exec(
+            select(sql_func.count()).select_from(Suggestion).where(*filtros)
+        ).one()
 
         by_risk = dict(
             session.exec(
                 select(Suggestion.risk_level, sql_func.count())
+                .where(*filtros)
                 .group_by(Suggestion.risk_level)
             ).all()
         )
@@ -208,6 +253,7 @@ def get_stats() -> dict:
         by_rating = dict(
             session.exec(
                 select(Suggestion.rating, sql_func.count())
+                .where(*filtros)
                 .group_by(Suggestion.rating)
             ).all()
         )
@@ -217,6 +263,7 @@ def get_stats() -> dict:
         by_model = dict(
             session.exec(
                 select(Suggestion.llm_model, sql_func.count())
+                .where(*filtros)
                 .group_by(Suggestion.llm_model)
             ).all()
         )
@@ -234,12 +281,20 @@ def get_stats() -> dict:
             avaliadas = session.exec(
                 select(sql_func.count())
                 .select_from(Suggestion)
-                .where(Suggestion.used_rag == flag, Suggestion.rating.is_not(None))
+                .where(
+                    *filtros,
+                    Suggestion.used_rag == flag,
+                    Suggestion.rating.is_not(None),
+                )
             ).one()
             positivas = session.exec(
                 select(sql_func.count())
                 .select_from(Suggestion)
-                .where(Suggestion.used_rag == flag, Suggestion.rating == "positivo")
+                .where(
+                    *filtros,
+                    Suggestion.used_rag == flag,
+                    Suggestion.rating == "positivo",
+                )
             ).one()
             rag_comparison[label] = {
                 "avaliadas": avaliadas,
@@ -248,6 +303,7 @@ def get_stats() -> dict:
             }
 
         return {
+            "escopo": f"{owner}/{repo}" if (owner and repo) else (owner or "todos"),
             "total_suggestions": total,
             "by_risk_level": by_risk,
             "by_rating": by_rating,

@@ -97,6 +97,36 @@ def bar():
     assert [f.name for f in result] == ["bar"]
 
 
+def test_functions_touched_by_diff_ordena_por_complexidade():
+    """
+    Só as primeiras N funções são analisadas (cota de LLM). Então a mais
+    complexa precisa vir primeiro — senão a chamada é gasta num construtor
+    trivial enquanto a função arriscada do mesmo PR fica de fora.
+    """
+    code = '''
+def trivial():
+    return 1
+
+
+def complexa(x):
+    if x > 0:
+        for i in range(x):
+            if i % 2:
+                try:
+                    pass
+                except Exception:
+                    pass
+    return x
+'''
+    functions = CodeAnalyzer().analyze_source(code)
+    # Todas as linhas estão no diff
+    commentable = set(range(1, 30))
+
+    resultado = _functions_touched_by_diff(functions, commentable)
+
+    assert [f.name for f in resultado] == ["complexa", "trivial"]
+
+
 def test_health_endpoint_returns_ok(tmp_path, monkeypatch):
     # Isola o banco num arquivo temporário — sem isso, o lifespan (init_db)
     # criaria um data.db de verdade na raiz do projeto.

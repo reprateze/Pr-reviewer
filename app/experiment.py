@@ -62,8 +62,11 @@ def run_experiment(
     failed = 0
     functions_total = 0
     per_condition = {"com_rag": 0, "sem_rag": 0}
+    # Contagem de SUGESTÕES por condição (não de PRs): é o que precisa ficar
+    # equilibrado, porque a comparação final é feita sobre sugestões.
+    suggestions_per_condition = {"com_rag": 0, "sem_rag": 0}
 
-    for index, pull in enumerate(pulls):
+    for pull in pulls:
         pr_number = pull["number"]
 
         if pr_already_analyzed(owner, repo, pr_number):
@@ -73,7 +76,14 @@ def run_experiment(
         if fixed_rag is not None:
             use_rag = fixed_rag
         elif alternate_rag:
-            use_rag = index % 2 == 0
+            # Manda o PR para o grupo que está atrás em número de sugestões.
+            # Alternar cegamente (par/ímpar) desequilibra, porque cada PR
+            # rende uma quantidade diferente de funções analisadas — numa
+            # rodada real deu 6 contra 12 com 3 PRs para cada lado.
+            use_rag = (
+                suggestions_per_condition["com_rag"]
+                <= suggestions_per_condition["sem_rag"]
+            )
         else:
             use_rag = False
 
@@ -91,8 +101,12 @@ def run_experiment(
             continue
 
         processed += 1
-        functions_total += result.get("functions_analyzed", 0)
-        per_condition["com_rag" if use_rag else "sem_rag"] += 1
+        analisadas = result.get("functions_analyzed", 0)
+        functions_total += analisadas
+
+        condicao = "com_rag" if use_rag else "sem_rag"
+        per_condition[condicao] += 1
+        suggestions_per_condition[condicao] += analisadas
 
         if on_progress:
             on_progress(pr_number, use_rag, result)
@@ -105,5 +119,8 @@ def run_experiment(
         "prs_pulados_ja_analisados": skipped_already_done,
         "prs_com_falha": failed,
         "funcoes_analisadas": functions_total,
-        "por_condicao": per_condition,
+        "prs_por_condicao": per_condition,
+        # O que importa pra comparação final: quantas SUGESTÕES cada grupo
+        # tem. É esse número que precisa estar equilibrado, não o de PRs.
+        "sugestoes_por_condicao": suggestions_per_condition,
     }
