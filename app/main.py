@@ -28,7 +28,7 @@ from app.dashboard import render_dashboard
 from app.diff_utils import commentable_lines, pick_comment_line
 from app.github_client import GitHubClient
 from app.llm_client import LLMClient
-from app.context_gatherer import ContextGatherer
+from app.context_gatherer import ContextGatherer, looks_like_test_file
 from app.comment_formatter import (
     SUMMARY_MARKER,
     format_pr_comment,
@@ -39,6 +39,7 @@ from app.db import (
     find_suggestion_by_comment_id,
     find_unchanged_suggestion,
     get_all_suggestions,
+    get_analyzed_repos,
     get_stats,
     get_top_rated_examples,
     init_db,
@@ -96,11 +97,22 @@ def _functions_touched_by_diff(functions: list, commentable: set[int]) -> list:
     em código fora de função (ex: um print solto no nível do módulo) faria a
     IA analisar arbitrariamente "a primeira função do arquivo" — que não tem
     nada a ver com a mudança.
+
+    O resultado vem ordenado da função mais complexa para a mais simples.
+    Isso importa porque só as primeiras `MAX_FUNCTIONS_PER_PR` são
+    analisadas: sem ordenar, a escolha seguiria a ordem do arquivo e a cota
+    de LLM acabaria gasta num `__init__` de três atribuições enquanto a
+    função de verdade complicada do mesmo PR ficaria de fora.
     """
-    return [
+    tocadas = [
         f for f in functions
         if pick_comment_line(f.start_line, f.end_line, commentable) is not None
     ]
+
+    # Número de desvios (if/for/while/try) é a melhor aproximação barata de
+    # "onde é mais fácil ter bug"; tamanho entra só como desempate.
+    tocadas.sort(key=lambda f: (f.num_branches, f.num_lines), reverse=True)
+    return tocadas
 
 
 def _post_or_update_summary_comment(
@@ -258,25 +270,34 @@ def health_check():
     return {"status": "ok"}
 
 
+@app.get("/repos")
+def analyzed_repos():
+    """Repositórios que já têm sugestões, para saber o que dá pra filtrar."""
+    return {"repositorios": get_analyzed_repos()}
+
+
 @app.get("/stats")
-def stats():
+def stats(owner: str | None = None, repo: str | None = None):
     """
-    Resumo agregado de todas as sugestões geradas até agora — total,
-    distribuição por nível de risco, por avaliação do dev e por modelo do
-    LLM usado. Pensado para alimentar direto a análise do experimento do
-    TCC, sem precisar exportar dados manualmente do banco.
+    Resumo agregado das sugestões geradas até agora — total, distribuição
+    por nível de risco, por avaliação do dev, por modelo do LLM usado e a
+    comparação com/sem RAG.
+
+    Aceita `?owner=X&repo=Y` para restringir a um repositório: sem filtro,
+    os dados do experimento (projeto de terceiros, dry-run) se somam aos da
+    demonstração, que não são comparáveis entre si.
     """
-    return get_stats()
+    return get_stats(owner=owner, repo=repo)
 
 
 @app.get("/stats/export.csv")
-def export_stats_csv():
+def export_stats_csv(owner: str | None = None, repo: str | None = None):
     """
-    Exporta todas as sugestões (uma por linha) em CSV, pronto pra abrir em
+    Exporta as sugestões (uma por linha) em CSV, pronto pra abrir em
     Excel/Google Sheets — mais útil pra análise do experimento do TCC do que
-    só o resumo agregado do /stats.
+    só o resumo agregado do /stats. Aceita `?owner=X&repo=Y`.
     """
-    suggestions = get_all_suggestions()
+    suggestions = get_all_suggestions(owner=owner, repo=repo)
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -338,7 +359,12 @@ def run_experiment_endpoint(payload: ExperimentRequest):
 
 
 @app.get("/experiment/blind-export.csv")
-def export_blind_evaluation_csv(limit: int = 60, seed: int = 42):
+def export_blind_evaluation_csv(
+    limit: int = 60,
+    seed: int = 42,
+    owner: str | None = None,
+    repo: str | None = None,
+):
     """
     Exporta uma amostra de sugestões EMBARALHADA e SEM a coluna de condição
     (com/sem RAG), para avaliação cega por terceiros.
@@ -351,8 +377,11 @@ def export_blind_evaluation_csv(limit: int = 60, seed: int = 42):
 
     `seed` fixa o embaralhamento: a mesma chamada gera sempre a mesma ordem,
     o que torna o procedimento reprodutível (exigência básica de método).
+
+    Filtre por `?owner=X&repo=Y` para avaliar só o repositório do
+    experimento, sem misturar com as sugestões da demonstração.
     """
-    suggestions = get_all_suggestions()
+    suggestions = get_all_suggestions(owner=owner, repo=repo)
 
     amostra = list(suggestions)
     random.Random(seed).shuffle(amostra)
@@ -388,10 +417,15 @@ def export_blind_evaluation_csv(limit: int = 60, seed: int = 42):
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard():
-    """Painel visual com o resumo do /stats + últimas sugestões geradas."""
-    recent = get_all_suggestions()[-20:][::-1]  # 20 mais recentes, mais nova primeiro
-    return render_dashboard(get_stats(), recent)
+def dashboard(owner: str | None = None, repo: str | None = None):
+    """
+    Painel visual com o resumo do /stats + últimas sugestões geradas.
+    Aceita `?owner=X&repo=Y` para ver só um repositório.
+    """
+    recent = get_all_suggestions(owner=owner, repo=repo)[-20:][::-1]
+    return render_dashboard(
+        get_stats(owner=owner, repo=repo), recent, repos=get_analyzed_repos()
+    )
 
 
 def analyze_pull_request(
@@ -456,6 +490,12 @@ def analyze_pull_request(
         if not filename.endswith(settings.supported_extensions):
             continue
         if file_info.get("status") == "removed":
+            continue
+        if not settings.analyze_test_files and looks_like_test_file(filename):
+            # Sugerir casos de teste para uma função que já é um teste não
+            # agrega e consome cota de LLM. (Os arquivos de teste seguem
+            # sendo indexados para o RAG e usados como contexto — o que não
+            # vale é gastar uma análise neles.)
             continue
 
         try:

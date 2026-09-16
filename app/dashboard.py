@@ -75,7 +75,34 @@ def _recent_rows(recent: list[Suggestion]) -> str:
     return "".join(rows)
 
 
-def render_dashboard(stats: dict, recent: list[Suggestion]) -> str:
+def _repo_filter_links(repos: list[dict], escopo_atual: str) -> str:
+    """
+    Links para filtrar o painel por repositório. Importa porque os dados do
+    experimento (projeto de terceiros, em dry-run) e os da demonstração
+    (auto-avaliados) se misturariam num número só, sem serem comparáveis.
+    """
+    if not repos:
+        return ""
+
+    def link(href: str, rotulo: str, ativo: bool) -> str:
+        estilo = "font-weight:700;text-decoration:underline" if ativo else ""
+        return f'<a href="{href}" style="{estilo}">{_esc(rotulo)}</a>'
+
+    partes = [link("/dashboard", "todos", escopo_atual == "todos")]
+    for r in repos:
+        alvo = f"{r['owner']}/{r['repo']}"
+        partes.append(link(
+            f"/dashboard?owner={r['owner']}&repo={r['repo']}",
+            f"{alvo} ({r['sugestoes']})",
+            escopo_atual == alvo,
+        ))
+
+    return '<p class="subtitle">Filtrar: ' + " · ".join(partes) + "</p>"
+
+
+def render_dashboard(
+    stats: dict, recent: list[Suggestion], repos: list[dict] | None = None
+) -> str:
     total = stats.get("total_suggestions", 0)
     feedback_rate = stats.get("feedback_rate", 0) or 0
     positive_rate = stats.get("positive_rate_among_rated")
@@ -99,6 +126,8 @@ def render_dashboard(stats: dict, recent: list[Suggestion]) -> str:
         f'<strong>{_format_rate(data)}</strong></div>'
         for key, data in rag_comparison.items()
     ) or '<div class="empty">Sem dados ainda.</div>'
+
+    filtros = _repo_filter_links(repos or [], stats.get("escopo", "todos"))
 
     return f"""<!doctype html>
 <html lang="pt-br">
@@ -156,6 +185,7 @@ def render_dashboard(stats: dict, recent: list[Suggestion]) -> str:
   <div class="wrap">
     <h1>PR Reviewer AI — Dashboard</h1>
     <p class="subtitle">Resumo das sugestões geradas e do feedback dos devs. Dados em tempo real via <a href="/stats">/stats</a> · <a href="/stats/export.csv">exportar CSV</a></p>
+    {filtros}
 
     <div class="cards">
       <div class="card"><div class="value">{total}</div><div class="label">Sugestões geradas</div></div>

@@ -10,13 +10,29 @@ mas já reduz bastante a redundância nas sugestões.
 from app.github_client import GitHubClient
 
 
-def _looks_like_test_file(path: str) -> bool:
-    """Heurística simples para identificar arquivos de teste Python."""
-    filename = path.rsplit("/", 1)[-1].lower()
-    return (
-        filename.endswith(".py")
-        and (filename.startswith("test_") or filename.endswith("_test.py"))
-    )
+def looks_like_test_file(path: str) -> bool:
+    """
+    Heurística para identificar arquivos de teste Python.
+
+    Reconhece tanto o padrão de nome (`test_x.py`, `x_test.py`) quanto a
+    convenção de pasta (`tests/`, `test/`) — esta última pega arquivos de
+    apoio que não seguem o padrão de nome, como `tests/conftest.py` ou
+    `tests/helpers.py`, comuns em projetos reais.
+
+    Serve a dois propósitos opostos no projeto: aqui, para ENCONTRAR testes
+    já existentes (contexto para a IA); no main.py, para NÃO gastar cota do
+    LLM sugerindo testes para funções que já são testes.
+    """
+    if not path.lower().endswith(".py"):
+        return False
+
+    partes = path.lower().split("/")
+    filename = partes[-1]
+
+    esta_em_pasta_de_teste = any(p in ("test", "tests") for p in partes[:-1])
+    tem_nome_de_teste = filename.startswith("test_") or filename.endswith("_test.py")
+
+    return esta_em_pasta_de_teste or tem_nome_de_teste
 
 
 class ContextGatherer:
@@ -56,7 +72,7 @@ class ContextGatherer:
         test_file_paths = list(dict.fromkeys(
             item["path"]
             for item in tree
-            if item.get("type") == "blob" and _looks_like_test_file(item["path"])
+            if item.get("type") == "blob" and looks_like_test_file(item["path"])
         ))  # dict.fromkeys remove duplicatas mantendo a ordem original
 
         names_to_check = [function_name] + list(also_check_names or [])

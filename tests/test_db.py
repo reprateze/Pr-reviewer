@@ -146,6 +146,64 @@ def test_get_stats_aggregates_totals_risk_rating_and_model(tmp_path, monkeypatch
     assert stats["positive_rate_among_rated"] == 1.0
 
 
+def test_get_stats_filtra_por_repositorio(tmp_path, monkeypatch):
+    """
+    Sem filtro, os dados do experimento (projeto de terceiros) se somariam
+    aos da demonstração — que têm natureza diferente e não são comparáveis.
+    """
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    for repo, funcao in [("experimento", "a"), ("experimento", "b"), ("demo", "c")]:
+        db.save_suggestion(
+            Suggestion(
+                owner="o", repo=repo, pr_number=1, commit_sha="x",
+                filename="f.py", function_name=funcao,
+                risk_level="alto", risk_reason="-",
+            )
+        )
+
+    assert db.get_stats()["total_suggestions"] == 3
+    assert db.get_stats(owner="o", repo="experimento")["total_suggestions"] == 2
+    assert db.get_stats(owner="o", repo="demo")["total_suggestions"] == 1
+    assert db.get_stats(owner="o", repo="demo")["escopo"] == "o/demo"
+
+
+def test_get_analyzed_repos_lista_repositorios_com_contagem(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    for repo in ["experimento", "experimento", "demo"]:
+        db.save_suggestion(
+            Suggestion(
+                owner="o", repo=repo, pr_number=1, commit_sha="x",
+                filename="f.py", function_name="f",
+                risk_level="alto", risk_reason="-",
+            )
+        )
+
+    repos = db.get_analyzed_repos()
+
+    assert {r["repo"]: r["sugestoes"] for r in repos} == {"experimento": 2, "demo": 1}
+    # Ordenado por quantidade, maior primeiro
+    assert repos[0]["repo"] == "experimento"
+
+
+def test_get_all_suggestions_filtra_por_repositorio(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    for repo in ["experimento", "demo"]:
+        db.save_suggestion(
+            Suggestion(
+                owner="o", repo=repo, pr_number=1, commit_sha="x",
+                filename="f.py", function_name=repo,
+                risk_level="alto", risk_reason="-",
+            )
+        )
+
+    filtradas = db.get_all_suggestions(owner="o", repo="demo")
+
+    assert [s.function_name for s in filtradas] == ["demo"]
+
+
 def test_get_stats_handles_empty_database(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
 

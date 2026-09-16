@@ -76,6 +76,44 @@ class GitHubClient:
             response.raise_for_status()
             return response.json()
 
+    def list_commits(self, owner: str, repo: str, limit: int = 100) -> list[dict]:
+        """
+        Lista commits do repositório, do mais recente para o mais antigo.
+        Usado para garimpar commits de correção no histórico (ver
+        app/bug_dataset.py).
+        """
+        url = f"{self.base_url}/repos/{owner}/{repo}/commits"
+        commits: list[dict] = []
+        page = 1
+
+        with httpx.Client(timeout=30.0) as client:
+            while len(commits) < limit:
+                response = client.get(
+                    url,
+                    headers=self._headers(),
+                    params={"per_page": min(100, limit - len(commits)), "page": page},
+                )
+                response.raise_for_status()
+                lote = response.json()
+                if not lote:
+                    break
+                commits.extend(lote)
+                page += 1
+
+        return commits[:limit]
+
+    def get_commit(self, owner: str, repo: str, sha: str) -> dict:
+        """
+        Detalhe de um commit, incluindo a lista de arquivos alterados com
+        seus patches — mesmo formato que `get_pr_files` devolve para um PR,
+        o que permite reaproveitar todo o pipeline de análise.
+        """
+        url = f"{self.base_url}/repos/{owner}/{repo}/commits/{sha}"
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(url, headers=self._headers())
+            response.raise_for_status()
+            return response.json()
+
     def list_pull_requests(
         self,
         owner: str,

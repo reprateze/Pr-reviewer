@@ -47,6 +47,15 @@ class Settings:
     # aqui esgota a cota mais rápido. Ajuste conforme a cota do modelo em uso.
     max_functions_per_pr: int = int(os.getenv("MAX_FUNCTIONS_PER_PR", "2"))
 
+    # Se arquivos de teste entram na ANÁLISE. Desligado por padrão: sugerir
+    # casos de teste para uma função que já é um teste é desperdício de cota
+    # (numa rodada real, metade das análises caiu em funções `test_*`).
+    #
+    # Não confundir com indexação: arquivos de teste continuam sendo
+    # indexados para o RAG, porque são ótimo contexto — mostram como o
+    # projeto escreve testes, que é justamente o que a IA vai sugerir.
+    analyze_test_files: bool = os.getenv("ANALYZE_TEST_FILES", "false").lower() == "true"
+
     # Extensões de arquivo que serão analisadas (MVP: só Python)
     supported_extensions: tuple = (".py",)
 
