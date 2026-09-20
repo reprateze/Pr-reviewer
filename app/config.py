@@ -56,6 +56,14 @@ class Settings:
     # corretamente o defeito. O teto agora é folgado e configurável.
     llm_max_output_tokens: int = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "8192"))
 
+    # Base da espera exponencial quando o Gemini responde 503 (sobrecarga do
+    # lado do Google). Com 3 tentativas, 10s vira 10s + 20s de espera — contra
+    # os 15s totais do backoff linear anterior, que perdeu metade das análises
+    # numa rodada de medição.
+    llm_overload_backoff_seconds: int = int(
+        os.getenv("LLM_OVERLOAD_BACKOFF_SECONDS", "10")
+    )
+
     # Qual versão do prompt do sistema usar: "v1" (sugestão de teste, o
     # original) ou "v2" (busca ativa de defeito). A v2 é padrão porque a v1,
     # medida contra defeitos reais do histórico do scrapy, detectou 0 de 6 —
