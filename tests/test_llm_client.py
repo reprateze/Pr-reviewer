@@ -299,6 +299,40 @@ def test_cadeia_nao_repete_o_modelo_principal(monkeypatch):
     assert client.models_chain == ["modelo-x", "modelo-y"]
 
 
+def test_prazo_total_impede_a_cadeia_de_se_arrastar(monkeypatch):
+    """
+    A cadeia multiplica o pior caso: 3 modelos x 3 tentativas, e uma falha do
+    provedor chegou a levar 94s para retornar. Sem teto, a análise de uma
+    função passava de dez minutos e a execução parecia travada.
+
+    Aqui o relógio é simulado: cada espera "consome" tempo, e o prazo de 25s
+    estoura antes de a cadeia percorrer tudo.
+    """
+    agora = {"t": 1000.0}
+    monkeypatch.setattr(llm_client_module.time, "time", lambda: agora["t"])
+    monkeypatch.setattr(
+        llm_client_module.time, "sleep",
+        lambda s: agora.__setitem__("t", agora["t"] + s),
+    )
+    monkeypatch.setattr(
+        llm_client_module.settings, "llm_total_deadline_seconds", 25
+    )
+    monkeypatch.setattr(
+        llm_client_module.settings, "llm_overload_backoff_seconds", 10
+    )
+
+    erro503 = Exception("503 UNAVAILABLE")
+    client, chamadas = _cliente_com_respostas(monkeypatch, [erro503] * 9)
+    client.models_chain = ["modelo-a", "modelo-b", "modelo-c"]
+
+    resultado = client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert resultado["risk_level"] == "desconhecido"
+    # Sem prazo seriam 9 chamadas; o teto corta antes de percorrer a cadeia.
+    assert len(chamadas) < 9
+    assert agora["t"] - 1000.0 <= 25
+
+
 # --- Provedor trocável -----------------------------------------------------
 #
 # A indisponibilidade do nível gratuito do Gemini chegou a inviabilizar metade

@@ -87,6 +87,17 @@ class Settings:
         os.getenv("LLM_OVERLOAD_BACKOFF_SECONDS", "10")
     )
 
+    # Teto de tempo para analisar UMA função, somando todas as tentativas e
+    # todos os modelos da cadeia.
+    #
+    # Existe porque a soma do pior caso é absurda: 3 modelos x 3 tentativas, e
+    # uma única falha do provedor chegou a levar 94 segundos para retornar. Sem
+    # teto, a análise de uma função passava de dez minutos e a execução parecia
+    # travada — a ferramenta ficava pior do que se tivesse desistido logo.
+    llm_total_deadline_seconds: int = int(
+        os.getenv("LLM_TOTAL_DEADLINE_SECONDS", "120")
+    )
+
     # Modelos de reserva, tentados em ordem quando o principal esgota as
     # tentativas (503, 429 ou resposta ilegível).
     #
