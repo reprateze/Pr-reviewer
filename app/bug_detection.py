@@ -134,7 +134,10 @@ def analisar_caso(
                 filename=filename,
                 function_name=func.name,
                 used_rag=use_rag,
-                llm_model=getattr(llm, "model", None),
+                llm_model=(
+                    getattr(llm, "last_model_used", None)
+                    or getattr(llm, "model", None)
+                ),
                 prompt_version=getattr(llm, "prompt_version", None),
                 risk_level=analise.get("risk_level", "desconhecido"),
                 risk_reason=analise.get("risk_reason", ""),

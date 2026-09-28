@@ -69,6 +69,9 @@ def test_analisar_caso_usa_o_commit_pai_e_registra_a_correcao_real(tmp_path, mon
 
     llm = MagicMock()
     llm.model = "modelo-teste"
+    # A gravação usa o modelo que de fato respondeu — com a cadeia de
+    # reserva, o principal pode não ser quem atendeu.
+    llm.last_model_used = "modelo-teste"
     llm.prompt_version = "v2"
     llm.suggest_tests_for_function.return_value = {
         "risk_level": "alto",

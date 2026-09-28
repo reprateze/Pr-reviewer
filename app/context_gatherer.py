@@ -7,6 +7,7 @@ teste (nome contém "test") e verificar, por busca de texto simples, se o
 nome da função aparece dentro deles. Não é uma análise semântica profunda,
 mas já reduz bastante a redundância nas sugestões.
 """
+
 from app.github_client import GitHubClient
 
 
@@ -50,7 +51,7 @@ class ContextGatherer:
         also_check_names: list[str] | None = None,
     ) -> dict[str, list[str]]:
         """
-        Retorna um dict {nome_da_função: [arquivos de teste que a mencionam]}.
+        Retorna dict {nome_da_função: [arquivos de teste que a mencionam]}.
 
         Por padrão verifica só `function_name`, mas também aceita nomes
         extras via `also_check_names` (ex: as dependências dela) — assim
@@ -69,11 +70,13 @@ class ContextGatherer:
                 # contexto extra em vez de quebrar a análise inteira.
                 return {}
 
-        test_file_paths = list(dict.fromkeys(
-            item["path"]
-            for item in tree
-            if item.get("type") == "blob" and looks_like_test_file(item["path"])
-        ))  # dict.fromkeys remove duplicatas mantendo a ordem original
+        test_file_paths = list(
+            dict.fromkeys(
+                item["path"]
+                for item in tree
+                if item.get("type") == "blob" and looks_like_test_file(item["path"])
+            )
+        )  # dict.fromkeys remove duplicatas mantendo a ordem original
 
         names_to_check = [function_name] + list(also_check_names or [])
         results: dict[str, list[str]] = {name: [] for name in names_to_check}

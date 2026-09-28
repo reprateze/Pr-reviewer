@@ -203,6 +203,18 @@ class LLMClient:
         self.api_key = api_key or settings.llm_api_key
         self.model = model or settings.llm_model
 
+        # Cadeia de modelos: o principal primeiro, depois as reservas (sem
+        # repetir o principal, se ele também estiver na lista de reservas).
+        self.models_chain = [self.model] + [
+            m for m in settings.llm_model_fallbacks if m != self.model
+        ]
+
+        # Modelo que de fato respondeu na última análise. Precisa ser
+        # registrado separadamente: com a cadeia, `self.model` deixou de ser
+        # garantia de quem respondeu, e gravar o modelo errado no banco
+        # tornaria os dados do experimento ininterpretáveis.
+        self.last_model_used = self.model
+
         # Qual versão do prompt usar. Existe como parâmetro (e é registrada
         # junto de cada análise) porque a comparação entre versões é um
         # experimento: sem saber qual prompt gerou cada resultado, os dados
@@ -210,12 +222,95 @@ class LLMClient:
         self.prompt_version = prompt_version or settings.prompt_version
         self.system_prompt = PROMPTS.get(self.prompt_version, SYSTEM_PROMPT_V2)
 
-        self.client = genai.Client(api_key=self.api_key)
+        self.provider = settings.llm_provider
+        self.client = self._criar_cliente()
 
         # Intervalo mínimo entre chamadas, calibrado conforme o RPM do
         # modelo configurado (ver LLM_MIN_REQUEST_INTERVAL_SECONDS).
         self.min_request_interval = settings.llm_min_request_interval_seconds
         self.last_request_time = 0.0
+
+    def _criar_cliente(self):
+        """
+        Cliente do provedor configurado.
+
+        O caminho "openai" cobre qualquer serviço compatível com a API da
+        OpenAI (Groq, OpenRouter, Cerebras, Mistral, GitHub Models), o que
+        permite trocar de provedor sem mexer em código — necessário porque a
+        indisponibilidade do nível gratuito do Gemini chegou a inviabilizar
+        metade das análises por dias seguidos.
+        """
+        if self.provider == "gemini":
+            return genai.Client(api_key=self.api_key)
+
+        if self.provider == "openai":
+            if not settings.llm_base_url:
+                raise ValueError(
+                    "LLM_PROVIDER=openai exige LLM_BASE_URL (ex: "
+                    "https://api.groq.com/openai/v1)"
+                )
+            from openai import OpenAI  # import local: só quem usa paga o custo
+
+            return OpenAI(api_key=self.api_key, base_url=settings.llm_base_url)
+
+        raise ValueError(
+            f"LLM_PROVIDER desconhecido: {self.provider!r} "
+            "(use 'gemini' ou 'openai')"
+        )
+
+    def _gerar_texto(self, modelo: str, prompt: str) -> str:
+        """Texto cru devolvido pelo modelo, independente do provedor."""
+        if self.provider == "gemini":
+            return self._gerar_texto_gemini(modelo, prompt)
+        return self._gerar_texto_openai(modelo, prompt)
+
+    def _gerar_texto_gemini(self, modelo: str, prompt: str) -> str:
+        response = self.client.models.generate_content(
+            model=modelo,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=self.system_prompt,
+                max_output_tokens=settings.llm_max_output_tokens,
+                response_mime_type=(
+                    "application/json" if settings.llm_json_mode else None
+                ),
+            ),
+        )
+        return response.text or ""
+
+    def _gerar_texto_openai(self, modelo: str, prompt: str) -> str:
+        """
+        Chamada no formato da API da OpenAI. Diferenças em relação ao Gemini:
+        o prompt de sistema vira uma mensagem com papel "system", e o modo
+        JSON é pedido por `response_format`.
+        """
+        argumentos = {
+            "model": modelo,
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": settings.llm_max_output_tokens,
+        }
+        if settings.llm_json_mode:
+            argumentos["response_format"] = {"type": "json_object"}
+
+        try:
+            response = self.client.chat.completions.create(**argumentos)
+        except Exception as exc:
+            # Parte dos serviços compatíveis não implementa o modo JSON.
+            # Repetir sem ele é melhor que perder a análise: o parser já lida
+            # com cerca de markdown e texto em volta do JSON.
+            if "response_format" not in str(exc) or "response_format" not in argumentos:
+                raise
+            print(
+                "[LLM] Provedor não aceitou o modo JSON; repetindo sem ele.",
+                flush=True,
+            )
+            argumentos.pop("response_format")
+            response = self.client.chat.completions.create(**argumentos)
+
+        return response.choices[0].message.content or ""
 
     def _wait_for_rate_limit(self):
         """
@@ -286,8 +381,74 @@ Código:
         extra_context: str | None = None,
         few_shot_examples: list[dict] | None = None,
     ) -> dict:
+        """
+        Analisa a função, tentando os modelos da cadeia em ordem.
 
+        A cadeia existe porque a indisponibilidade do nível gratuito é
+        SORTEIO POR MOMENTO, não característica de um modelo: numa medição,
+        `gemini-3.6-flash` respondeu em 1,3s e `gemini-3.5-flash` deu 503;
+        dois dias antes era o contrário. Fixar "o melhor modelo" não resolve,
+        porque amanhã é ele que está fora.
+
+        Esgotadas as tentativas de um modelo por indisponibilidade (503),
+        cota (429) ou resposta ilegível, o próximo da cadeia é tentado. Só
+        quando todos falham a análise é registrada como "desconhecido".
+
+        Na mesma medição, o modelo que respondeu detectou o defeito real
+        (atributo inexistente) que a alternativa rápida — um "lite" — não
+        detectou: ela devolveu risco alto com uma justificativa plausível
+        sobre outro assunto. É por isso que a cadeia padrão tem só modelos
+        "flash", nenhum "lite": disponibilidade não pode ser comprada com
+        capacidade de detecção.
+        """
         last_error: Exception | None = None
+
+        for indice, modelo in enumerate(self.models_chain):
+            if indice > 0:
+                print(
+                    f"[LLM] Trocando para o modelo de reserva: {modelo}",
+                    flush=True,
+                )
+            try:
+                return self._analisar_com_modelo(
+                    modelo, function, filename, max_retries,
+                    extra_context, few_shot_examples,
+                )
+            except Exception as exc:
+                last_error = exc
+
+        if isinstance(last_error, RespostaIlegivel):
+            return {
+                "risk_level": "desconhecido",
+                "risk_reason": (
+                    "Não foi possível interpretar a resposta da IA após "
+                    f"{max_retries + 1} tentativas."
+                ),
+                "suggested_tests": [],
+                "raw_response": last_error.raw_text,
+            }
+
+        return {
+            "risk_level": "desconhecido",
+            "risk_reason": f"Erro ao consultar IA: {last_error}",
+            "suggested_tests": [],
+        }
+
+    def _analisar_com_modelo(
+        self,
+        modelo: str,
+        function: FunctionInfo,
+        filename: str,
+        max_retries: int,
+        extra_context: str | None,
+        few_shot_examples: list[dict] | None,
+    ) -> dict:
+        """
+        Tentativas contra UM modelo. Devolve a análise, ou levanta o último
+        erro para que a cadeia possa passar ao modelo seguinte.
+        """
+        last_error: Exception | None = None
+        self.last_model_used = modelo
 
         for attempt in range(max_retries + 1):
             try:
@@ -296,29 +457,22 @@ Código:
 
                 print(
                     f"[LLM] Analisando "
-                    f"{filename} → {function.name}()"
+                    f"{filename} → {function.name}() com {modelo}"
                 )
                 if extra_context:
                     print(f"[LLM] Contexto extra enviado:\n{extra_context}\n")
 
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=self._build_user_prompt(
+                raw_text = self._gerar_texto(
+                    modelo,
+                    self._build_user_prompt(
                         function,
                         filename,
                         extra_context,
                         few_shot_examples,
                     ),
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.system_prompt,
-                        max_output_tokens=settings.llm_max_output_tokens,
-                        response_mime_type="application/json",
-                    ),
                 )
 
-                raw_text = response.text or ""
-
-                print("\n========== RESPOSTA RAW DO GEMINI ==========")
+                print("\n========== RESPOSTA RAW DO MODELO ==========")
                 print(repr(raw_text))
                 print("============================================\n")
 
@@ -404,22 +558,11 @@ Código:
                 print(f"[LLM] Erro inesperado: {exc}")
                 break
 
-        if isinstance(last_error, RespostaIlegivel):
-            return {
-                "risk_level": "desconhecido",
-                "risk_reason": (
-                    "Não foi possível interpretar a resposta da IA após "
-                    f"{max_retries + 1} tentativas."
-                ),
-                "suggested_tests": [],
-                "raw_response": last_error.raw_text,
-            }
-
-        return {
-            "risk_level": "desconhecido",
-            "risk_reason": f"Erro ao consultar IA: {last_error}",
-            "suggested_tests": [],
-        }
+        # Levanta em vez de devolver o fallback: é o que permite a quem
+        # chamou passar para o próximo modelo da cadeia.
+        raise last_error if last_error else RuntimeError(
+            "Nenhuma tentativa foi executada"
+        )
 
     def _parse_response(self, raw_text: str) -> dict:
         """Extrai o JSON da resposta da IA."""
