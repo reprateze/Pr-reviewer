@@ -16,8 +16,31 @@ class Settings:
     # Token de acesso ao GitHub (para postar comentários no PR)
     github_token: str = os.getenv("GITHUB_TOKEN", "")
 
-    # Chave da API do provedor de LLM (Anthropic, OpenAI, etc.)
+    # Chave da API do provedor de LLM.
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
+
+    # Qual provedor usar para a GERAÇÃO de texto:
+    #   "gemini"  -> SDK do Google (padrão, o histórico todo foi gerado assim)
+    #   "openai"  -> qualquer serviço compatível com a API da OpenAI, o que
+    #                inclui Groq, OpenRouter, Cerebras, Mistral e GitHub
+    #                Models. Nesse caso LLM_BASE_URL é obrigatório.
+    #
+    # Existe porque a indisponibilidade do nível gratuito do Gemini travou o
+    # projeto por dias: 4 de 8 análises voltaram vazias por 503, atravessando
+    # modelos diferentes. Trocar de provedor deixou de exigir mexer em código.
+    llm_provider: str = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
+
+    # Endereço do serviço compatível com OpenAI. Exemplos:
+    #   Groq        https://api.groq.com/openai/v1
+    #   OpenRouter  https://openrouter.ai/api/v1
+    # Confirme na documentação do provedor antes de usar.
+    llm_base_url: str = os.getenv("LLM_BASE_URL", "")
+
+    # Alguns serviços compatíveis não aceitam o modo JSON nativo. Quando
+    # desligado, o pedido vai sem `response_format` e a resposta é
+    # interpretada pelo parser tolerante de sempre (que já lida com cerca de
+    # markdown e texto em volta do JSON).
+    llm_json_mode: bool = os.getenv("LLM_JSON_MODE", "true").lower() == "true"
 
     # Nome do modelo a ser usado (Gemini, via Google AI Studio).
     #
@@ -62,6 +85,26 @@ class Settings:
     # numa rodada de medição.
     llm_overload_backoff_seconds: int = int(
         os.getenv("LLM_OVERLOAD_BACKOFF_SECONDS", "10")
+    )
+
+    # Modelos de reserva, tentados em ordem quando o principal esgota as
+    # tentativas (503, 429 ou resposta ilegível).
+    #
+    # Existe porque a indisponibilidade do nível gratuito é sorteio por
+    # momento, não característica de um modelo: numa medição real,
+    # gemini-3.6-flash respondeu em 1,3s enquanto gemini-3.5-flash dava 503;
+    # dois dias antes era o contrário. Fixar "o melhor modelo" não resolve.
+    #
+    # Só modelos "flash": na mesma medição, a alternativa "lite" respondeu 14x
+    # mais rápido, devolveu risco alto com texto convincente e NÃO achou o
+    # defeito real. Disponibilidade não pode ser comprada com capacidade de
+    # detecção — que foi o único fator que a medição mostrou importar.
+    llm_model_fallbacks: tuple = tuple(
+        m.strip()
+        for m in os.getenv(
+            "LLM_MODEL_FALLBACKS", "gemini-3.6-flash,gemini-3.5-flash,gemini-3.7-flash"
+        ).split(",")
+        if m.strip()
     )
 
     # Qual versão do prompt do sistema usar: "v1" (sugestão de teste, o
@@ -114,6 +157,16 @@ class Settings:
 
     # Modelo de embeddings (cota separada da cota de geração de texto).
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
+
+    # Chave usada SÓ para embeddings. Precisa existir separada porque a
+    # geração pode migrar para outro provedor (ver LLM_PROVIDER) enquanto o
+    # embedding continua no Gemini — a cota de embedding é folgada e nunca foi
+    # o gargalo. Sem essa separação, trocar o provedor de texto quebraria o
+    # RAG em silêncio. Por padrão reaproveita LLM_API_KEY, que é o caso de
+    # quem usa Gemini para as duas coisas.
+    embedding_api_key: str = (
+        os.getenv("EMBEDDING_API_KEY", "") or os.getenv("LLM_API_KEY", "")
+    )
 
     # Tamanho do vetor. O modelo devolve 3072 por padrão, mas suporta truncar
     # para tamanhos menores — 768 reduz em 4x o espaço no banco e o custo de

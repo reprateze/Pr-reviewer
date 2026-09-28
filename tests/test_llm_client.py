@@ -1,3 +1,5 @@
+import pytest
+
 import app.llm_client as llm_client_module
 from app.llm_client import LLMClient
 
@@ -157,6 +159,9 @@ def _cliente_com_respostas(monkeypatch, respostas):
         client.client.models, "generate_content", fake_generate_content
     )
     monkeypatch.setattr(client, "_wait_for_rate_limit", lambda: None)
+    # Sem reservas: estes testes exercitam o laço de tentativas de UM modelo.
+    # A cadeia tem teste próprio, mais abaixo.
+    client.models_chain = [client.model]
 
     return client, chamadas
 
@@ -223,3 +228,156 @@ def test_backoff_do_503_cresce_exponencialmente(monkeypatch):
     assert resultado["risk_level"] == "alto"
     assert esperas == [10, 20]
     assert len(chamadas) == 3
+
+
+# --- Cadeia de modelos -----------------------------------------------------
+#
+# Medição que motivou a cadeia: num mesmo minuto, gemini-3.6-flash devolveu
+# 503 e gemini-3.5-flash respondeu detectando o defeito real. Dois dias antes
+# a situação era inversa. A indisponibilidade do nível gratuito é sorteio por
+# momento, então insistir num único modelo perde análises que outro faria.
+
+
+def test_modelo_de_reserva_assume_quando_o_principal_esta_indisponivel(monkeypatch):
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _: None)
+
+    erro503 = Exception("503 UNAVAILABLE: model is overloaded")
+    client, chamadas = _cliente_com_respostas(
+        monkeypatch, [erro503, erro503, erro503, JSON_VALIDO]
+    )
+    client.models_chain = ["modelo-principal", "modelo-reserva"]
+
+    resultado = client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert resultado["risk_level"] == "alto"
+    # 3 tentativas no principal, e a 4ª chamada já é no de reserva.
+    assert len(chamadas) == 4
+    assert chamadas[2]["model"] == "modelo-principal"
+    assert chamadas[3]["model"] == "modelo-reserva"
+
+
+def test_registra_o_modelo_que_de_fato_respondeu(monkeypatch):
+    """
+    Sem isso o banco gravaria o modelo principal mesmo quando a resposta veio
+    de um reserva — e os dados do experimento, que comparam modelos, ficariam
+    ininterpretáveis.
+    """
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _: None)
+
+    erro503 = Exception("503 UNAVAILABLE")
+    client, _ = _cliente_com_respostas(
+        monkeypatch, [erro503, erro503, erro503, JSON_VALIDO]
+    )
+    client.models_chain = ["modelo-principal", "modelo-reserva"]
+
+    client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert client.last_model_used == "modelo-reserva"
+
+
+def test_sem_reserva_disponivel_devolve_desconhecido(monkeypatch):
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _: None)
+
+    erro503 = Exception("503 UNAVAILABLE")
+    client, chamadas = _cliente_com_respostas(monkeypatch, [erro503] * 6)
+    client.models_chain = ["modelo-a", "modelo-b"]
+
+    resultado = client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert resultado["risk_level"] == "desconhecido"
+    assert len(chamadas) == 6  # 3 tentativas em cada um dos dois modelos
+
+
+def test_cadeia_nao_repete_o_modelo_principal(monkeypatch):
+    monkeypatch.setattr(
+        llm_client_module.settings, "llm_model_fallbacks",
+        ("modelo-x", "modelo-y"),
+    )
+
+    client = LLMClient(api_key="fake-key", model="modelo-x")
+
+    assert client.models_chain == ["modelo-x", "modelo-y"]
+
+
+# --- Provedor trocável -----------------------------------------------------
+#
+# A indisponibilidade do nível gratuito do Gemini chegou a inviabilizar metade
+# das análises por dias. Poder apontar para outro serviço sem mexer em código
+# é o que impede o projeto de ficar refém de um provedor.
+
+
+class _MensagemFake:
+    def __init__(self, content):
+        self.message = type("M", (), {"content": content})()
+
+
+class _RespostaOpenAIFake:
+    def __init__(self, content):
+        self.choices = [_MensagemFake(content)]
+
+
+def _cliente_openai(monkeypatch, respostas):
+    monkeypatch.setattr(llm_client_module.settings, "llm_provider", "openai")
+    monkeypatch.setattr(
+        llm_client_module.settings, "llm_base_url", "https://exemplo.invalido/v1"
+    )
+
+    client = LLMClient(api_key="fake-key", model="modelo-aberto")
+    chamadas = []
+
+    def fake_create(**kwargs):
+        chamadas.append(kwargs)
+        item = respostas[len(chamadas) - 1]
+        if isinstance(item, Exception):
+            raise item
+        return _RespostaOpenAIFake(item)
+
+    monkeypatch.setattr(client.client.chat.completions, "create", fake_create)
+    monkeypatch.setattr(client, "_wait_for_rate_limit", lambda: None)
+    client.models_chain = [client.model]
+
+    return client, chamadas
+
+
+def test_provedor_compativel_com_openai_monta_system_e_user(monkeypatch):
+    client, chamadas = _cliente_openai(monkeypatch, [JSON_VALIDO])
+
+    resultado = client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert resultado["risk_level"] == "alto"
+    mensagens = chamadas[0]["messages"]
+    assert mensagens[0]["role"] == "system"
+    assert "defeitos" in mensagens[0]["content"]      # é o prompt de sistema
+    assert mensagens[1]["role"] == "user"
+    assert "def somar" in mensagens[1]["content"]     # é o código da função
+    assert chamadas[0]["model"] == "modelo-aberto"
+
+
+def test_provedor_sem_modo_json_repete_sem_response_format(monkeypatch):
+    """
+    Parte dos serviços compatíveis não implementa `response_format`. Repetir
+    sem ele preserva a análise — o parser já tolera JSON com texto em volta.
+    """
+    erro = Exception("unsupported parameter: response_format")
+    client, chamadas = _cliente_openai(monkeypatch, [erro, JSON_VALIDO])
+
+    resultado = client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert resultado["risk_level"] == "alto"
+    assert "response_format" in chamadas[0]
+    assert "response_format" not in chamadas[1]
+
+
+def test_provider_openai_sem_base_url_falha_cedo(monkeypatch):
+    monkeypatch.setattr(llm_client_module.settings, "llm_provider", "openai")
+    monkeypatch.setattr(llm_client_module.settings, "llm_base_url", "")
+
+    with pytest.raises(ValueError, match="LLM_BASE_URL"):
+        LLMClient(api_key="fake-key")
+
+
+def test_provider_desconhecido_falha_cedo(monkeypatch):
+    monkeypatch.setattr(llm_client_module.settings, "llm_provider", "vertex")
+
+    with pytest.raises(ValueError, match="LLM_PROVIDER"):
+        LLMClient(api_key="fake-key")
