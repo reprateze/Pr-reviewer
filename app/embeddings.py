@@ -25,7 +25,7 @@ class EmbeddingClient:
         model: str | None = None,
         dimensions: int | None = None,
     ):
-        self.api_key = api_key or settings.llm_api_key
+        self.api_key = api_key or settings.embedding_api_key
         self.model = model or settings.embedding_model
         self.dimensions = dimensions or settings.embedding_dimensions
         self.client = genai.Client(api_key=self.api_key)

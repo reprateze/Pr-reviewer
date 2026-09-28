@@ -730,7 +730,7 @@ def analyze_pull_request(
                 func,
                 analysis,
                 commentable,
-                llm_model=llm.model,
+                llm_model=llm.last_model_used,
                 code_hash=code_hash,
                 used_rag=used_rag,
                 prompt_version=llm.prompt_version,
