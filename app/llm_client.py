@@ -258,6 +258,22 @@ class LLMClient:
             "(use 'gemini' ou 'openai')"
         )
 
+    @staticmethod
+    def _espera_possivel(desejada: int, prazo: float | None) -> int | None:
+        """
+        Quanto realmente dá para esperar antes de nova tentativa.
+
+        Devolve `None` quando não sobra tempo — aí o certo é desistir desse
+        modelo em vez de dormir além do prazo. Sem esse corte, a espera
+        exponencial ignorava o prazo total e a análise passava de dez minutos.
+        """
+        if prazo is None:
+            return desejada
+        restante = int(prazo - time.time())
+        if restante <= 0:
+            return None
+        return min(desejada, restante)
+
     def _gerar_texto(self, modelo: str, prompt: str) -> str:
         """Texto cru devolvido pelo modelo, independente do provedor."""
         if self.provider == "gemini":
@@ -403,8 +419,22 @@ Código:
         """
         last_error: Exception | None = None
 
+        # Prazo total para TODA a cadeia. Sem ele, o pior caso multiplica:
+        # 3 modelos x 3 tentativas, e uma única falha do provedor já levou 94
+        # segundos para retornar — o que fazia a análise de uma função passar
+        # de dez minutos e a Action parecer travada. Falhar rápido é melhor
+        # que insistir além do que qualquer um espera.
+        prazo = time.time() + settings.llm_total_deadline_seconds
+
         for indice, modelo in enumerate(self.models_chain):
             if indice > 0:
+                if time.time() >= prazo:
+                    print(
+                        f"[LLM] Prazo de {settings.llm_total_deadline_seconds}s "
+                        f"esgotado; não vou tentar {modelo}.",
+                        flush=True,
+                    )
+                    break
                 print(
                     f"[LLM] Trocando para o modelo de reserva: {modelo}",
                     flush=True,
@@ -412,7 +442,7 @@ Código:
             try:
                 return self._analisar_com_modelo(
                     modelo, function, filename, max_retries,
-                    extra_context, few_shot_examples,
+                    extra_context, few_shot_examples, prazo,
                 )
             except Exception as exc:
                 last_error = exc
@@ -442,15 +472,25 @@ Código:
         max_retries: int,
         extra_context: str | None,
         few_shot_examples: list[dict] | None,
+        prazo: float | None = None,
     ) -> dict:
         """
         Tentativas contra UM modelo. Devolve a análise, ou levanta o último
         erro para que a cadeia possa passar ao modelo seguinte.
+
+        `prazo` é o instante (time.time()) em que a cadeia inteira desiste.
+        Nova tentativa só começa se ainda houver tempo.
         """
         last_error: Exception | None = None
         self.last_model_used = modelo
 
         for attempt in range(max_retries + 1):
+            if prazo is not None and attempt > 0 and time.time() >= prazo:
+                print(
+                    "[LLM] Prazo esgotado; não vou tentar de novo.",
+                    flush=True,
+                )
+                break
             try:
                 # Controla o intervalo entre chamadas
                 self._wait_for_rate_limit()
@@ -503,7 +543,11 @@ Código:
                 # ----------------------------------------
                 if is_rate_limited:
                     if attempt < max_retries:
-                        wait_time = 30 * (attempt + 1)
+                        wait_time = self._espera_possivel(
+                            30 * (attempt + 1), prazo
+                        )
+                        if wait_time is None:
+                            break
                         print(
                             f"[LLM] Limite da API atingido (429). "
                             f"Aguardando {wait_time}s..."
@@ -527,11 +571,14 @@ Código:
                         # segundos — curto demais para um pico de demanda do
                         # lado do Google, que foi a causa mais frequente de
                         # análise perdida na medição.
-                        wait_time = settings.llm_overload_backoff_seconds * (
-                            2 ** attempt
+                        wait_time = self._espera_possivel(
+                            settings.llm_overload_backoff_seconds * (2 ** attempt),
+                            prazo,
                         )
+                        if wait_time is None:
+                            break
                         print(
-                            f"[LLM] Gemini indisponível (503). "
+                            f"[LLM] Provedor indisponível (503). "
                             f"Aguardando {wait_time}s..."
                         )
                         time.sleep(wait_time)
