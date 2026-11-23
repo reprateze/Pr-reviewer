@@ -159,6 +159,7 @@ def _post_suggestion(
     code_hash: str | None = None,
     used_rag: bool = False,
     prompt_version: str | None = None,
+    usage: dict | None = None,
     dry_run: bool = False,
 ) -> int | None:
     """
@@ -208,6 +209,10 @@ def _post_suggestion(
                 code_hash=code_hash,
                 used_rag=used_rag,
                 prompt_version=prompt_version,
+                tokens_entrada=(usage or {}).get("tokens_entrada"),
+                tokens_saida=(usage or {}).get("tokens_saida"),
+                tokens_total=(usage or {}).get("tokens_total"),
+                context_mode=settings.context_mode,
             )
         )
     except Exception:
@@ -313,12 +318,14 @@ def export_stats_csv(owner: str | None = None, repo: str | None = None):
         "id", "owner", "repo", "pr_number", "filename", "function_name",
         "risk_level", "risk_reason", "llm_model", "used_rag", "rating",
         "feedback_reason", "created_at", "feedback_at",
+        "context_mode", "tokens_entrada", "tokens_saida", "tokens_total",
     ])
     for s in suggestions:
         writer.writerow([
             s.id, s.owner, s.repo, s.pr_number, s.filename, s.function_name,
             s.risk_level, s.risk_reason, s.llm_model, s.used_rag, s.rating,
             s.feedback_reason, s.created_at, s.feedback_at,
+            s.context_mode, s.tokens_entrada, s.tokens_saida, s.tokens_total,
         ])
 
     return Response(
@@ -544,6 +551,9 @@ def analyze_pull_request(
     # essa passada só teríamos visibilidade do arquivo sendo processado no momento.
     files_functions: dict[str, list] = {}
     files_patches: dict[str, str] = {}
+    # Conteúdo integral, usado apenas pela condição de controle da medição de
+    # custo (ver CONTEXT_MODE em config.py).
+    files_contents: dict[str, str] = {}
 
     for file_info in pr_files:
         filename = file_info["filename"]
@@ -569,6 +579,7 @@ def analyze_pull_request(
 
         files_functions[filename] = analyzer.analyze_source(content)
         files_patches[filename] = file_info.get("patch", "")
+        files_contents[filename] = content
 
     for filename, functions in files_functions.items():
         commentable = commentable_lines(files_patches.get(filename))
@@ -685,6 +696,15 @@ def analyze_pull_request(
 
             extra_context = _build_extra_context(context_parts, context_budget)
 
+            # Condição de controle da medição de custo: em vez do contexto
+            # montado acima, envia o arquivo inteiro. Serve para quantificar
+            # quanto o fatiamento por árvore sintática economiza em tokens.
+            if settings.context_mode == "arquivo_integral":
+                extra_context = (
+                    "Arquivo completo em que a função está definida:\n"
+                    + files_contents.get(filename, "")
+                )
+
             # Exemplos de sugestões bem avaliadas (few-shot), priorizando essa
             # MESMA função/arquivo antes de cair pra "mesmo repo" ou "global"
             # — ver get_top_rated_examples() pra a ordem de prioridade.
@@ -731,6 +751,7 @@ def analyze_pull_request(
                 analysis,
                 commentable,
                 llm_model=llm.last_model_used,
+                usage=llm.last_usage,
                 code_hash=code_hash,
                 used_rag=used_rag,
                 prompt_version=llm.prompt_version,

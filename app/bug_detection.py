@@ -125,6 +125,12 @@ def analisar_caso(
                     "suggested_tests": [],
                 }
 
+            # O consumo pode não existir (provedor que não informa) ou vir de
+            # um dublê de teste: em qualquer caso, não pode impedir o registro
+            # do resultado da análise, que é o dado que importa aqui.
+            uso = getattr(llm, "last_usage", None)
+            uso = uso if isinstance(uso, dict) else {}
+
             registro = BugDetectionCase(
                 owner=owner,
                 repo=repo,
@@ -139,6 +145,10 @@ def analisar_caso(
                     or getattr(llm, "model", None)
                 ),
                 prompt_version=getattr(llm, "prompt_version", None),
+                tokens_entrada=uso.get("tokens_entrada"),
+                tokens_saida=uso.get("tokens_saida"),
+                tokens_total=uso.get("tokens_total"),
+                context_mode=settings.context_mode,
                 risk_level=analise.get("risk_level", "desconhecido"),
                 risk_reason=analise.get("risk_reason", ""),
                 suggested_tests=analise.get("suggested_tests", []),

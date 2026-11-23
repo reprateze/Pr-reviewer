@@ -9,6 +9,7 @@ limite baixo de chamadas por minuto e por dia.
 import json
 import re
 import time
+import unicodedata
 
 from google import genai
 from google.genai import types
@@ -58,6 +59,28 @@ def _strip_emojis(value):
     if isinstance(value, dict):
         return {k: _strip_emojis(v) for k, v in value.items()}
     return value
+
+
+# Únicos níveis aceitos — os mesmos que o prompt pede ao modelo. "desconhecido"
+# NÃO está aqui de propósito: ele não vem do modelo, é o marcador que o próprio
+# sistema grava quando a análise falhou (provedor fora, resposta ilegível).
+NIVEIS_DE_RISCO = ("baixo", "medio", "alto")
+
+
+def _normalizar_risco(valor) -> str | None:
+    """
+    Devolve o nível canônico ("baixo" | "medio" | "alto") ou None se inválido.
+
+    Só corrige o que é diferença de FORMA, não de conteúdo: "Médio", "ALTO" e
+    " alto " são o mesmo nível escrito de outro jeito, e descartá-los jogaria
+    fora uma análise boa. Já "crítico", vazio ou um número não são nenhum dos
+    três níveis — adivinhar qual o modelo quis dizer seria inventar dado.
+    """
+    if not isinstance(valor, str):
+        return None
+    sem_acento = unicodedata.normalize("NFKD", valor).encode("ascii", "ignore").decode()
+    nivel = sem_acento.strip().lower()
+    return nivel if nivel in NIVEIS_DE_RISCO else None
 
 
 SYSTEM_PROMPT_V1 = """Você é um assistente de QA especializado em revisão de código.
@@ -215,6 +238,12 @@ class LLMClient:
         # tornaria os dados do experimento ininterpretáveis.
         self.last_model_used = self.model
 
+        # Consumo de tokens da última análise, informado pelo provedor.
+        # Registrado por exigência da avaliação: comparar o custo do contexto
+        # obtido por fatiamento da árvore sintática com o do arquivo integral
+        # depende de medir os tokens efetivamente enviados, e não de estimar.
+        self.last_usage: dict = {}
+
         # Qual versão do prompt usar. Existe como parâmetro (e é registrada
         # junto de cada análise) porque a comparação entre versões é um
         # experimento: sem saber qual prompt gerou cada resultado, os dados
@@ -292,6 +321,10 @@ class LLMClient:
                 ),
             ),
         )
+        self._registrar_consumo(
+            getattr(response, "usage_metadata", None),
+            ("prompt_token_count", "candidates_token_count", "total_token_count"),
+        )
         return response.text or ""
 
     def _gerar_texto_openai(self, modelo: str, prompt: str) -> str:
@@ -326,7 +359,36 @@ class LLMClient:
             argumentos.pop("response_format")
             response = self.client.chat.completions.create(**argumentos)
 
+        self._registrar_consumo(
+            getattr(response, "usage", None),
+            ("prompt_tokens", "completion_tokens", "total_tokens"),
+        )
         return response.choices[0].message.content or ""
+
+    def _registrar_consumo(self, usage, campos: tuple[str, str, str]) -> None:
+        """
+        Guarda o consumo de tokens informado pelo provedor.
+
+        Os dois provedores suportados nomeiam os campos de forma diferente, daí
+        a tupla. Provedor que não informa consumo deixa o registro vazio em vez
+        de quebrar a análise: a medição é instrumentação, não requisito de
+        funcionamento.
+        """
+        self.last_usage = {}
+        if usage is None:
+            return
+
+        entrada, saida, total = (getattr(usage, c, None) for c in campos)
+        if entrada is None and saida is None and total is None:
+            return
+
+        self.last_usage = {
+            "tokens_entrada": entrada,
+            "tokens_saida": saida,
+            "tokens_total": total if total is not None else (
+                (entrada or 0) + (saida or 0)
+            ),
+        }
 
     def _wait_for_rate_limit(self):
         """
@@ -612,7 +674,31 @@ Código:
         )
 
     def _parse_response(self, raw_text: str) -> dict:
-        """Extrai o JSON da resposta da IA."""
+        """
+        Extrai o JSON da resposta da IA e valida o `risk_level`.
+
+        Resposta sem um dos três níveis válidos é tratada como ilegível (mesmo
+        laço de retry do JSON quebrado), e não gravada com o valor que veio:
+        antes, qualquer texto que o modelo pusesse em `risk_level` ia direto
+        para o banco, e só o prompt limitava os valores. Também não vira
+        "desconhecido" na hora, porque "desconhecido" significa FALHA nas
+        estatísticas — misturar "o modelo errou o formato" com "o provedor
+        caiu" distorceria essa contagem. Só se todas as tentativas falharem
+        é que o resultado final vira "desconhecido", como qualquer falha.
+        """
+        dados = self._extrair_json(raw_text)
+        if not isinstance(dados, dict):
+            raise RespostaIlegivel(raw_text)
+
+        nivel = _normalizar_risco(dados.get("risk_level"))
+        if nivel is None:
+            raise RespostaIlegivel(raw_text)
+
+        dados["risk_level"] = nivel
+        return dados
+
+    def _extrair_json(self, raw_text: str):
+        """Extrai o JSON da resposta da IA (com ou sem bloco Markdown em volta)."""
         cleaned = raw_text.strip()
 
         # Remove possíveis blocos Markdown
