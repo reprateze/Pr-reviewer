@@ -50,6 +50,23 @@ _EMOJI_PATTERN = re.compile(
 )
 
 
+def linha_valida(valor) -> int | None:
+    """
+    Converte para inteiro a linha indicada pelo modelo, descartando o que não
+    for número positivo.
+
+    O valor vem de texto gerado por LLM, que ocasionalmente devolve null,
+    string vazia ou um intervalo ("12-15"). Nesses casos a medição de acerto
+    na localização não se aplica àquela análise, e registrar nulo é mais
+    honesto do que adivinhar um número.
+    """
+    try:
+        linha = int(valor)
+    except (TypeError, ValueError):
+        return None
+    return linha if linha > 0 else None
+
+
 def _strip_emojis(value):
     """Remove emojis recursivamente de strings, listas e dicts."""
     if isinstance(value, str):
@@ -212,7 +229,41 @@ e sem usar blocos de código markdown (```):
 """
 
 
-PROMPTS = {"v1": SYSTEM_PROMPT_V1, "v2": SYSTEM_PROMPT_V2}
+
+# Versão 3: a v2 acrescida do número da linha do defeito.
+#
+# Criada como versão NOVA em vez de alteração da v2 porque a versão do prompt
+# é gravada em cada análise justamente para manter os dados comparáveis:
+# mudar o texto da v2 faria registros antigos e novos carregarem o mesmo
+# rótulo descrevendo instruções diferentes.
+#
+# O número da linha permite medir a taxa de acerto na localização (LSR), que
+# verifica se o apontamento foi associado à linha correta — até aqui o
+# comentário era ancorado na primeira linha alterada da função, que nem
+# sempre é onde está o defeito.
+SYSTEM_PROMPT_V3 = SYSTEM_PROMPT_V2.replace(
+    '''  "suggested_improvements": [
+    {"issue": "string curta descrevendo o defeito (cite a função certa se for numa dependência)", "suggestion": "string explicando a correção, pode incluir um trecho de código"}
+  ]
+}''',
+    '''  "suggested_improvements": [
+    {"issue": "string curta descrevendo o defeito (cite a função certa se for numa dependência)", "suggestion": "string explicando a correção, pode incluir um trecho de código"}
+  ],
+  "linha_do_defeito": número da linha do arquivo onde está o defeito principal, ou null se nenhum defeito foi encontrado
+}
+
+Sobre o campo "linha_do_defeito": o cabeçalho do pedido informa em que linha
+do ARQUIVO a função começa. Some a esse número a quantidade de linhas até o
+trecho defeituoso e responda com o total. Exemplo: se a função começa na
+linha 40 e o defeito está na terceira linha dela, responda 42.''',
+)
+
+
+PROMPTS = {
+    "v1": SYSTEM_PROMPT_V1,
+    "v2": SYSTEM_PROMPT_V2,
+    "v3": SYSTEM_PROMPT_V3,
+}
 
 
 class LLMClient:
@@ -439,9 +490,18 @@ class LLMClient:
                 f"conteúdo):\n{self._format_few_shot_examples(few_shot_examples)}\n"
             )
 
+        # A linha inicial só é informada na v3, que pede o número da linha do
+        # defeito. Acrescentá-la nas versões anteriores mudaria a entrada de
+        # análises já registradas sob aquele rótulo, quebrando a comparação
+        # entre versões de prompt.
+        linha_inicial = (
+            f"Linha inicial no arquivo: {function.start_line}\n"
+            if self.prompt_version == "v3" else ""
+        )
+
         return f"""{few_shot_block}Arquivo: {filename}
 Função: {function.name}
-Linhas: {function.num_lines}
+{linha_inicial}Linhas: {function.num_lines}
 Complexidade aproximada (nº de branches): {function.num_branches}
 Possui try/except: {function.has_try_except}
 {context_block}

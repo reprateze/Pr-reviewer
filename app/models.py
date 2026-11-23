@@ -95,6 +95,15 @@ class Suggestion(SQLModel, table=True):
     tokens_total: int | None = None
     context_mode: str | None = None
 
+    # Linha que o modelo indicou como defeituosa (prompt v3 em diante).
+    #
+    # Necessária para a taxa de acerto na localização (LSR): até aqui o
+    # comentário era ancorado na primeira linha alterada da função, que nem
+    # sempre coincide com a linha do defeito, de modo que não havia o que
+    # comparar com o gabarito. Fica nula nas versões de prompt que não pedem
+    # o número da linha.
+    linha_apontada: int | None = None
+
 
 class BugDetectionCase(SQLModel, table=True):
     """
@@ -138,6 +147,15 @@ class BugDetectionCase(SQLModel, table=True):
     tokens_saida: int | None = None
     tokens_total: int | None = None
     context_mode: str | None = None
+
+    # Linha que o modelo indicou como defeituosa (prompt v3 em diante).
+    #
+    # Necessária para a taxa de acerto na localização (LSR): até aqui o
+    # comentário era ancorado na primeira linha alterada da função, que nem
+    # sempre coincide com a linha do defeito, de modo que não havia o que
+    # comparar com o gabarito. Fica nula nas versões de prompt que não pedem
+    # o número da linha.
+    linha_apontada: int | None = None
     llm_model: str | None = None
     # Versão do prompt usada. Sem isso, comparar resultados de épocas
     # diferentes fica impossível: não dá pra saber se a diferença veio da

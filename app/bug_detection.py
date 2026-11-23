@@ -20,6 +20,7 @@ from app.code_analyzer import (
 )
 from app.config import settings
 from app.db import save_bug_case
+from app.llm_client import linha_valida
 from app.models import BugDetectionCase
 from app.rag import format_retrieved_context, retrieve_similar_chunks
 
@@ -149,6 +150,7 @@ def analisar_caso(
                 tokens_saida=uso.get("tokens_saida"),
                 tokens_total=uso.get("tokens_total"),
                 context_mode=settings.context_mode,
+                linha_apontada=linha_valida(analise.get("linha_do_defeito")),
                 risk_level=analise.get("risk_level", "desconhecido"),
                 risk_reason=analise.get("risk_reason", ""),
                 suggested_tests=analise.get("suggested_tests", []),

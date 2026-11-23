@@ -319,3 +319,58 @@ def test_post_suggestion_sem_consumo_informado_grava_nulo(tmp_path, monkeypatch)
 
     assert gravada is not None
     assert gravada.tokens_total is None
+
+
+def test_post_suggestion_grava_a_linha_apontada_pelo_modelo(tmp_path, monkeypatch):
+    """
+    A linha indicada pelo modelo é o que permite medir o acerto na
+    localização; a linha de ancoragem do comentário não serve para isso,
+    porque é a primeira linha alterada da função, e não a do defeito.
+    """
+    from app.main import _post_suggestion
+    from sqlmodel import SQLModel, Session, select
+
+    engine = create_engine(f"sqlite:///{tmp_path}/t3.db")
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(db, "engine", engine)
+
+    _post_suggestion(
+        MagicMock(), "dono", "repo", 9, "sha", "app/z.py",
+        _funcao_qualquer(),
+        {
+            "risk_level": "alto",
+            "risk_reason": "comparação de ponto flutuante",
+            "suggested_tests": [],
+            "linha_do_defeito": 47,
+        },
+        commentable=set(),
+        dry_run=True,
+    )
+
+    with Session(engine) as s:
+        gravada = s.exec(select(db.Suggestion)).first()
+
+    assert gravada.linha_apontada == 47
+
+
+def test_post_suggestion_aceita_resposta_sem_linha(tmp_path, monkeypatch):
+    """Versões de prompt anteriores à v3 não informam linha."""
+    from app.main import _post_suggestion
+    from sqlmodel import SQLModel, Session, select
+
+    engine = create_engine(f"sqlite:///{tmp_path}/t4.db")
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(db, "engine", engine)
+
+    _post_suggestion(
+        MagicMock(), "dono", "repo", 10, "sha", "app/z.py",
+        _funcao_qualquer(),
+        {"risk_level": "baixo", "risk_reason": "", "suggested_tests": []},
+        commentable=set(),
+        dry_run=True,
+    )
+
+    with Session(engine) as s:
+        gravada = s.exec(select(db.Suggestion)).first()
+
+    assert gravada.linha_apontada is None
