@@ -351,15 +351,35 @@ def save_bug_case(caso: BugDetectionCase) -> BugDetectionCase:
         return caso
 
 
-def bug_case_ja_analisado(owner: str, repo: str, sha_da_correcao: str) -> bool:
-    """Permite retomar uma rodada interrompida sem reanalisar (e sem gastar cota)."""
+def bug_case_ja_analisado(
+    owner: str,
+    repo: str,
+    sha_da_correcao: str,
+    used_rag: bool | None = None,
+    repeticao: int | None = None,
+) -> bool:
+    """
+    Permite retomar uma rodada interrompida sem reanalisar (e sem gastar cota).
+
+    `used_rag` e `repeticao` tornam a verificação específica da EXECUÇÃO, e não
+    apenas do caso. Sem isso, a comparação pareada seria impossível: analisado
+    o caso na condição com recuperação, a condição sem recuperação seria
+    descartada como repetida — e o mesmo valeria para a segunda repetição de
+    uma mesma condição.
+    """
+    filtros = [
+        BugDetectionCase.owner == owner,
+        BugDetectionCase.repo == repo,
+        BugDetectionCase.sha_da_correcao == sha_da_correcao,
+    ]
+    if used_rag is not None:
+        filtros.append(BugDetectionCase.used_rag == used_rag)
+    if repeticao is not None:
+        filtros.append(BugDetectionCase.repeticao == repeticao)
+
     with Session(engine) as session:
         achado = session.exec(
-            select(BugDetectionCase.id).where(
-                BugDetectionCase.owner == owner,
-                BugDetectionCase.repo == repo,
-                BugDetectionCase.sha_da_correcao == sha_da_correcao,
-            ).limit(1)
+            select(BugDetectionCase.id).where(*filtros).limit(1)
         ).first()
         return achado is not None
 

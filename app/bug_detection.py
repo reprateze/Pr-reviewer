@@ -25,6 +25,27 @@ from app.models import BugDetectionCase
 from app.rag import format_retrieved_context, retrieve_similar_chunks
 
 
+def condicoes_do_caso(
+    indice: int, sem_rag: bool = False, pareado: bool = False
+) -> list[bool]:
+    """
+    Em que condições este caso será analisado.
+
+    - `sem_rag`: só a linha de base, sem recuperação semântica.
+    - `pareado`: as DUAS condições sobre o mesmo defeito, o que isola o efeito
+      da recuperação. Alternando entre casos, a diferença observada poderia
+      vir de os defeitos serem diferentes, e não da condição.
+    - padrão: alterna por caso, modo original, mais barato em cota.
+
+    Devolve os valores de `use_rag` a aplicar, na ordem de execução.
+    """
+    if sem_rag:
+        return [False]
+    if pareado:
+        return [False, True]
+    return [indice % 2 == 0]
+
+
 def funcoes_com_defeito(analyzer: CodeAnalyzer, conteudo: str, linhas: list[int]) -> list:
     """
     Funções que contêm alguma das linhas defeituosas.
@@ -53,6 +74,7 @@ def analisar_caso(
     use_rag: bool = False,
     analyzer: CodeAnalyzer | None = None,
     max_funcoes: int | None = None,
+    repeticao: int = 1,
 ) -> list[BugDetectionCase]:
     """
     Roda a análise sobre UM caso de defeito e salva o resultado.
@@ -151,6 +173,7 @@ def analisar_caso(
                 tokens_total=uso.get("tokens_total"),
                 context_mode=settings.context_mode,
                 linha_apontada=linha_valida(analise.get("linha_do_defeito")),
+                repeticao=repeticao,
                 risk_level=analise.get("risk_level", "desconhecido"),
                 risk_reason=analise.get("risk_reason", ""),
                 suggested_tests=analise.get("suggested_tests", []),
