@@ -249,3 +249,73 @@ def test_post_or_update_summary_comment_falls_back_to_create_on_list_failure():
     _post_or_update_summary_comment(fake_github, "o", "r", 1, "corpo novo")
 
     fake_github.post_comment.assert_called_once_with("o", "r", 1, "corpo novo")
+
+
+# --- Registro do consumo de tokens -----------------------------------------
+#
+# A comparação entre o contexto fatiado pela árvore sintática e o arquivo
+# integral só é possível se cada análise guardar quantos tokens custou e em
+# que modo foi produzida.
+
+
+def _funcao_qualquer():
+    return CodeAnalyzer().analyze_source(
+        "def somar(a, b):\n    return a + b\n"
+    )[0]
+
+
+def test_post_suggestion_grava_consumo_de_tokens_e_modo_de_contexto(
+    tmp_path, monkeypatch
+):
+    from app.main import _post_suggestion
+    import app.main as main_module
+
+    engine = create_engine(f"sqlite:///{tmp_path}/t.db")
+    from sqlmodel import SQLModel, Session, select
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(db, "engine", engine)
+    monkeypatch.setattr(main_module.settings, "context_mode", "arquivo_integral")
+
+    _post_suggestion(
+        MagicMock(), "dono", "repo", 7, "sha123", "app/x.py",
+        _funcao_qualquer(),
+        {"risk_level": "alto", "risk_reason": "x", "suggested_tests": []},
+        commentable=set(),
+        usage={"tokens_entrada": 1200, "tokens_saida": 300, "tokens_total": 1500},
+        dry_run=True,
+    )
+
+    with Session(engine) as s:
+        gravada = s.exec(select(db.Suggestion)).first()
+
+    assert gravada.tokens_entrada == 1200
+    assert gravada.tokens_total == 1500
+    assert gravada.context_mode == "arquivo_integral"
+
+
+def test_post_suggestion_sem_consumo_informado_grava_nulo(tmp_path, monkeypatch):
+    """
+    Provedor que não relata consumo não pode impedir a gravação da análise —
+    a medição é instrumentação, o comentário é o produto.
+    """
+    from app.main import _post_suggestion
+
+    engine = create_engine(f"sqlite:///{tmp_path}/t2.db")
+    from sqlmodel import SQLModel, Session, select
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(db, "engine", engine)
+
+    _post_suggestion(
+        MagicMock(), "dono", "repo", 8, "sha", "app/y.py",
+        _funcao_qualquer(),
+        {"risk_level": "baixo", "risk_reason": "", "suggested_tests": []},
+        commentable=set(),
+        usage=None,
+        dry_run=True,
+    )
+
+    with Session(engine) as s:
+        gravada = s.exec(select(db.Suggestion)).first()
+
+    assert gravada is not None
+    assert gravada.tokens_total is None

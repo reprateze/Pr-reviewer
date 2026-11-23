@@ -30,6 +30,12 @@ def commentable_lines(patch: str | None) -> set[int]:
         if line.startswith("-"):
             continue  # linha só existia no arquivo antigo; não avança a numeração nova
 
+        if line.startswith("\\"):
+            # Marcador do git ("\\ No newline at end of file"), não é conteúdo.
+            # Sem este descarte ele era contado como linha e deslocava em 1 toda
+            # a numeração seguinte, podendo ancorar o comentário na linha errada.
+            continue
+
         # Linha de contexto (" ") ou adicionada ("+"): existe no arquivo novo.
         lines_ok.add(new_line)
         new_line += 1

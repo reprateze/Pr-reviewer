@@ -148,6 +148,17 @@ class Settings:
     # tem muitas dependências.
     max_extra_context_chars: int = int(os.getenv("MAX_EXTRA_CONTEXT_CHARS", "2000"))
 
+    # Como o contexto é montado:
+    #   "ast"              -> só as funções alteradas e suas dependências
+    #                         (modo normal de operação)
+    #   "arquivo_integral" -> o arquivo inteiro, como CONDIÇÃO DE CONTROLE
+    #
+    # O segundo modo existe para a comparação de custo prevista na avaliação:
+    # sem uma condição de controle que envie tudo, não há com o que comparar o
+    # consumo de tokens do contexto reduzido. Não se destina à operação, e sim
+    # à medição.
+    context_mode: str = os.getenv("CONTEXT_MODE", "ast").strip().lower()
+
     # Onde persistir as sugestões geradas e o feedback dos devs sobre elas.
     # Por padrão usa SQLite local (zero configuração, ótimo para desenvolver
     # ou rodar o experimento do TCC sem depender de infra externa). Em

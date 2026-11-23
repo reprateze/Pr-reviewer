@@ -83,6 +83,18 @@ class Suggestion(SQLModel, table=True):
     # sugestões tiveram contexto semântico e quais não.
     used_rag: bool = False
 
+    # Consumo de tokens informado pelo provedor e modo de contexto empregado.
+    #
+    # Registrados para a comparação prevista na avaliação: verificar se enviar
+    # apenas as funções alteradas (modo "ast") custa menos que enviar o arquivo
+    # integral (modo "arquivo_integral") e se essa economia compromete a
+    # detecção. Sem medir os tokens por análise, a comparação dependeria de
+    # estimativa. Ficam nulos quando o provedor não informa o consumo.
+    tokens_entrada: int | None = None
+    tokens_saida: int | None = None
+    tokens_total: int | None = None
+    context_mode: str | None = None
+
 
 class BugDetectionCase(SQLModel, table=True):
     """
@@ -114,6 +126,18 @@ class BugDetectionCase(SQLModel, table=True):
     function_name: str
 
     used_rag: bool = False
+
+    # Consumo de tokens informado pelo provedor e modo de contexto empregado.
+    #
+    # Registrados para a comparação prevista na avaliação: verificar se enviar
+    # apenas as funções alteradas (modo "ast") custa menos que enviar o arquivo
+    # integral (modo "arquivo_integral") e se essa economia compromete a
+    # detecção. Sem medir os tokens por análise, a comparação dependeria de
+    # estimativa. Ficam nulos quando o provedor não informa o consumo.
+    tokens_entrada: int | None = None
+    tokens_saida: int | None = None
+    tokens_total: int | None = None
+    context_mode: str | None = None
     llm_model: str | None = None
     # Versão do prompt usada. Sem isso, comparar resultados de épocas
     # diferentes fica impossível: não dá pra saber se a diferença veio da

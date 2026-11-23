@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import app.llm_client as llm_client_module
@@ -415,3 +417,150 @@ def test_provider_desconhecido_falha_cedo(monkeypatch):
 
     with pytest.raises(ValueError, match="LLM_PROVIDER"):
         LLMClient(api_key="fake-key")
+
+
+# ---------------------------------------------------------------------------
+# Validação do risk_level
+# ---------------------------------------------------------------------------
+
+def _json_com_risco(valor) -> str:
+    return json.dumps({"risk_level": valor, "risk_reason": "x", "suggested_tests": []})
+
+
+@pytest.mark.parametrize("vindo_do_modelo, esperado", [
+    ("alto", "alto"),
+    ("medio", "medio"),
+    ("baixo", "baixo"),
+    ("Médio", "medio"),      # acento: mesmo nível, outra grafia
+    (" ALTO ", "alto"),      # caixa e espaços
+    ("BAIXO", "baixo"),
+])
+def test_risk_level_e_normalizado(vindo_do_modelo, esperado):
+    client = LLMClient.__new__(LLMClient)
+    assert client._parse_response(_json_com_risco(vindo_do_modelo))["risk_level"] == esperado
+
+
+@pytest.mark.parametrize("vindo_do_modelo", ["crítico", "high", "", None, 3, ["alto"]])
+def test_risk_level_invalido_e_resposta_ilegivel(vindo_do_modelo):
+    """
+    Antes, qualquer valor ia direto para o banco. Valor fora dos três níveis
+    não é adivinhado: a resposta é tratada como ilegível.
+    """
+    client = LLMClient.__new__(LLMClient)
+    with pytest.raises(llm_client_module.RespostaIlegivel):
+        client._parse_response(_json_com_risco(vindo_do_modelo))
+
+
+def test_risk_level_ausente_e_resposta_ilegivel():
+    client = LLMClient.__new__(LLMClient)
+    with pytest.raises(llm_client_module.RespostaIlegivel):
+        client._parse_response('{"risk_reason": "x", "suggested_tests": []}')
+
+
+def test_json_que_nao_e_objeto_e_resposta_ilegivel():
+    client = LLMClient.__new__(LLMClient)
+    with pytest.raises(llm_client_module.RespostaIlegivel):
+        client._parse_response('[{"risk_level": "alto"}]')
+
+
+def test_risk_level_invalido_e_retentado(monkeypatch):
+    """Mesmo laço de retry do JSON quebrado: a próxima tentativa pode vir certa."""
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _: None)
+    client, chamadas = _cliente_com_respostas(
+        monkeypatch, [_json_com_risco("crítico"), JSON_VALIDO]
+    )
+
+    resultado = client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert resultado["risk_level"] == "alto"
+    assert len(chamadas) == 2
+
+
+def test_risk_level_sempre_invalido_vira_desconhecido(monkeypatch):
+    """
+    Esgotadas as tentativas, cai no mesmo caminho de qualquer falha:
+    "desconhecido", que o cache não reaproveita e as estatísticas contam
+    como análise sem resultado.
+    """
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _: None)
+    ruim = _json_com_risco("crítico")
+    client, chamadas = _cliente_com_respostas(monkeypatch, [ruim, ruim, ruim])
+
+    resultado = client.suggest_tests_for_function(_funcao_de_exemplo(), "app/x.py")
+
+    assert resultado["risk_level"] == "desconhecido"
+    assert resultado["raw_response"] == ruim
+    assert len(chamadas) == 3
+
+
+# --- Consumo de tokens ------------------------------------------------------
+#
+# A comparação de custo entre o contexto fatiado pela árvore sintática e o
+# arquivo integral depende de medir os tokens efetivamente enviados. Estimar
+# pelo tamanho do texto não serve: a tokenização varia por modelo.
+
+
+class _UsoGemini:
+    prompt_token_count = 1200
+    candidates_token_count = 300
+    total_token_count = 1500
+
+
+class _UsoOpenAI:
+    prompt_tokens = 800
+    completion_tokens = 150
+    total_tokens = 950
+
+
+def test_registra_consumo_informado_pelo_gemini():
+    client = LLMClient.__new__(LLMClient)
+    client._registrar_consumo(
+        _UsoGemini(),
+        ("prompt_token_count", "candidates_token_count", "total_token_count"),
+    )
+
+    assert client.last_usage == {
+        "tokens_entrada": 1200,
+        "tokens_saida": 300,
+        "tokens_total": 1500,
+    }
+
+
+def test_registra_consumo_informado_por_servico_compativel_com_openai():
+    client = LLMClient.__new__(LLMClient)
+    client._registrar_consumo(
+        _UsoOpenAI(), ("prompt_tokens", "completion_tokens", "total_tokens")
+    )
+
+    assert client.last_usage["tokens_entrada"] == 800
+    assert client.last_usage["tokens_total"] == 950
+
+
+def test_provedor_sem_relato_de_consumo_nao_quebra_a_analise():
+    """
+    Medir tokens é instrumentação, não requisito de funcionamento: provedor que
+    não informa consumo deve deixar o registro vazio e seguir normalmente.
+    """
+    client = LLMClient.__new__(LLMClient)
+    client._registrar_consumo(None, ("a", "b", "c"))
+    assert client.last_usage == {}
+
+    class _Vazio:
+        pass
+
+    client._registrar_consumo(_Vazio(), ("a", "b", "c"))
+    assert client.last_usage == {}
+
+
+def test_total_e_calculado_quando_o_provedor_informa_so_as_partes():
+    class _Parcial:
+        prompt_tokens = 400
+        completion_tokens = 100
+        total_tokens = None
+
+    client = LLMClient.__new__(LLMClient)
+    client._registrar_consumo(
+        _Parcial(), ("prompt_tokens", "completion_tokens", "total_tokens")
+    )
+
+    assert client.last_usage["tokens_total"] == 500

@@ -33,3 +33,22 @@ def test_pick_comment_line_returns_first_line_in_range_that_is_commentable():
 def test_pick_comment_line_returns_none_when_range_not_in_diff():
     commentable = {1, 2, 3}
     assert pick_comment_line(start_line=8, end_line=15, commentable=commentable) is None
+
+
+def test_marcador_de_ausencia_de_quebra_de_linha_nao_conta_como_linha():
+    """
+    O git insere "\\ No newline at end of file" no meio do diff. Como a marca
+    não começa com "-", ela era tratada como conteúdo e deslocava em 1 toda a
+    numeração seguinte — o bastante para ancorar o comentário na linha errada
+    em arquivos sem quebra de linha final.
+    """
+    patch = (
+        "@@ -1,3 +1,3 @@\n"
+        " primeira\n"
+        "-segunda antiga\n"
+        "\\ No newline at end of file\n"
+        "+segunda nova\n"
+        " terceira\n"
+    )
+
+    assert commentable_lines(patch) == {1, 2, 3}
