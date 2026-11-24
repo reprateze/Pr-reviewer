@@ -31,7 +31,7 @@ from app.code_analyzer import (
 from app.dashboard import render_dashboard
 from app.diff_utils import commentable_lines, pick_comment_line
 from app.github_client import GitHubClient
-from app.llm_client import LLMClient
+from app.llm_client import LLMClient, linha_valida
 from app.context_gatherer import ContextGatherer, looks_like_test_file
 from app.comment_formatter import (
     SUMMARY_MARKER,
@@ -213,6 +213,7 @@ def _post_suggestion(
                 tokens_saida=(usage or {}).get("tokens_saida"),
                 tokens_total=(usage or {}).get("tokens_total"),
                 context_mode=settings.context_mode,
+                linha_apontada=linha_valida(analysis.get("linha_do_defeito")),
             )
         )
     except Exception:
@@ -319,6 +320,7 @@ def export_stats_csv(owner: str | None = None, repo: str | None = None):
         "risk_level", "risk_reason", "llm_model", "used_rag", "rating",
         "feedback_reason", "created_at", "feedback_at",
         "context_mode", "tokens_entrada", "tokens_saida", "tokens_total",
+        "linha_apontada", "prompt_version",
     ])
     for s in suggestions:
         writer.writerow([
@@ -326,6 +328,7 @@ def export_stats_csv(owner: str | None = None, repo: str | None = None):
             s.risk_level, s.risk_reason, s.llm_model, s.used_rag, s.rating,
             s.feedback_reason, s.created_at, s.feedback_at,
             s.context_mode, s.tokens_entrada, s.tokens_saida, s.tokens_total,
+            s.linha_apontada, s.prompt_version,
         ])
 
     return Response(

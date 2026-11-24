@@ -564,3 +564,57 @@ def test_total_e_calculado_quando_o_provedor_informa_so_as_partes():
     )
 
     assert client.last_usage["tokens_total"] == 500
+
+
+# --- Linha apontada pelo modelo (LSR) ---------------------------------------
+#
+# A taxa de acerto na localização verifica se o apontamento foi associado à
+# linha certa. Até a v2 o comentário era ancorado na primeira linha alterada
+# da função, que nem sempre é onde está o defeito — não havia o que comparar.
+
+
+def test_v3_pede_a_linha_do_defeito_e_v2_nao():
+    from app.llm_client import PROMPTS
+
+    assert "linha_do_defeito" in PROMPTS["v3"]
+    assert "linha_do_defeito" not in PROMPTS["v2"]
+
+
+def test_v3_e_versao_nova_em_vez_de_alteracao_da_v2():
+    """
+    A versão do prompt é gravada em cada análise para manter os dados
+    comparáveis. Alterar o texto da v2 faria registros antigos e novos
+    carregarem o mesmo rótulo descrevendo instruções diferentes.
+    """
+    from app.llm_client import PROMPTS, SYSTEM_PROMPT_V2
+
+    assert PROMPTS["v2"] == SYSTEM_PROMPT_V2
+    assert PROMPTS["v3"] != PROMPTS["v2"]
+    # A v3 é a v2 acrescida: tudo que a v2 instrui continua valendo.
+    assert "tarefa PRINCIPAL é procurar defeitos" in PROMPTS["v3"]
+
+
+def test_linha_inicial_so_vai_no_prompt_da_v3():
+    """
+    Informar a linha inicial nas versões anteriores mudaria a entrada de
+    análises já registradas sob aquele rótulo.
+    """
+    func = _funcao_de_exemplo()
+
+    for versao, esperado in (("v2", False), ("v3", True)):
+        client = LLMClient.__new__(LLMClient)
+        client.prompt_version = versao
+        prompt = client._build_user_prompt(func, "app/x.py", None, None)
+        assert ("Linha inicial no arquivo" in prompt) is esperado
+
+
+def test_linha_valida_descarta_o_que_nao_for_numero_positivo():
+    from app.llm_client import linha_valida
+
+    assert linha_valida(42) == 42
+    assert linha_valida("42") == 42
+    assert linha_valida(None) is None      # nenhum defeito encontrado
+    assert linha_valida("") is None
+    assert linha_valida("12-15") is None   # intervalo, não uma linha
+    assert linha_valida(0) is None
+    assert linha_valida(-3) is None
