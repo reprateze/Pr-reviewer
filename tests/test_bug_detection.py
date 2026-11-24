@@ -156,3 +156,64 @@ def test_bug_case_ja_analisado_permite_retomar(tmp_path, monkeypatch):
     ))
 
     assert db.bug_case_ja_analisado("o", "r", "sha-fix") is True
+
+
+# --- Condições experimentais -----------------------------------------------
+
+
+def test_modo_pareado_submete_o_mesmo_caso_as_duas_condicoes():
+    """
+    É o que permite atribuir a diferença à recuperação semântica. Alternando
+    entre casos, a diferença observada poderia vir de os defeitos serem
+    diferentes, e não da condição aplicada.
+    """
+    from app.bug_detection import condicoes_do_caso
+
+    assert condicoes_do_caso(0, pareado=True) == [False, True]
+    assert condicoes_do_caso(7, pareado=True) == [False, True]
+
+
+def test_modo_padrao_alterna_a_condicao_entre_casos():
+    from app.bug_detection import condicoes_do_caso
+
+    assert [condicoes_do_caso(i) for i in range(4)] == [
+        [True], [False], [True], [False]
+    ]
+
+
+def test_linha_de_base_ignora_o_pareamento():
+    """Pedir a linha de base é pedir só a condição sem recuperação."""
+    from app.bug_detection import condicoes_do_caso
+
+    assert condicoes_do_caso(0, sem_rag=True) == [False]
+    assert condicoes_do_caso(0, sem_rag=True, pareado=True) == [False]
+
+
+def test_analisar_caso_registra_o_numero_da_repeticao(tmp_path, monkeypatch):
+    """
+    Os modelos não são determinísticos: guardar cada execução separadamente é
+    o que permite medir a variação, em vez de atribuí-la ao acaso.
+    """
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+
+    github = MagicMock()
+    github.get_file_content.return_value = CODIGO_COM_BUG
+
+    llm = MagicMock()
+    llm.model = "modelo-teste"
+    llm.last_model_used = "modelo-teste"
+    llm.prompt_version = "v3"
+    llm.last_usage = {}
+    llm.suggest_tests_for_function.return_value = {
+        "risk_level": "alto",
+        "risk_reason": "divisao sem checar lista vazia",
+        "suggested_tests": [],
+        "suggested_improvements": [],
+    }
+
+    registros = analisar_caso(
+        github, llm, "o", "r", CASO, use_rag=False, repeticao=2
+    )
+
+    assert registros
+    assert all(r.repeticao == 2 for r in registros)

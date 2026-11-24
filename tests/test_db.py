@@ -375,3 +375,51 @@ def test_find_unchanged_suggestion_ignora_analise_que_falhou(tmp_path, monkeypat
     )
     assert encontrada is not None
     assert encontrada.risk_level == "alto"
+
+
+def _caso_de_defeito(**extra):
+    from app.models import BugDetectionCase
+    base = dict(
+        owner="scrapy", repo="scrapy",
+        sha_da_correcao="abc", sha_com_bug="def",
+        mensagem_da_correcao="fix: trata lista vazia",
+        filename="s/core.py", function_name="media",
+        risk_level="alto", risk_reason="divisao por zero",
+        suggested_tests=[],
+    )
+    base.update(extra)
+    return BugDetectionCase(**base)
+
+
+def test_verificacao_de_caso_ja_analisado_distingue_a_condicao(tmp_path, monkeypatch):
+    """
+    Sem distinguir a condição, a comparação pareada seria impossível: analisado
+    o caso com recuperação semântica, a execução sem recuperação seria
+    descartada como repetida.
+    """
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+    db.save_bug_case(_caso_de_defeito(used_rag=True, repeticao=1))
+
+    assert db.bug_case_ja_analisado("scrapy", "scrapy", "abc", used_rag=True) is True
+    assert db.bug_case_ja_analisado("scrapy", "scrapy", "abc", used_rag=False) is False
+
+
+def test_verificacao_distingue_a_repeticao(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+    db.save_bug_case(_caso_de_defeito(used_rag=False, repeticao=1))
+
+    assert db.bug_case_ja_analisado(
+        "scrapy", "scrapy", "abc", used_rag=False, repeticao=1
+    ) is True
+    assert db.bug_case_ja_analisado(
+        "scrapy", "scrapy", "abc", used_rag=False, repeticao=2
+    ) is False
+
+
+def test_sem_filtros_a_verificacao_segue_valendo_para_o_caso_inteiro(tmp_path, monkeypatch):
+    """Retomar uma rodada simples continua funcionando como antes."""
+    monkeypatch.setattr(db, "engine", _fresh_engine(tmp_path))
+    db.save_bug_case(_caso_de_defeito(used_rag=True, repeticao=3))
+
+    assert db.bug_case_ja_analisado("scrapy", "scrapy", "abc") is True
+    assert db.bug_case_ja_analisado("scrapy", "scrapy", "outro") is False

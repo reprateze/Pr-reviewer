@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.bug_dataset import coletar_casos_de_bug  # noqa: E402
-from app.bug_detection import analisar_caso  # noqa: E402
+from app.bug_detection import analisar_caso, condicoes_do_caso  # noqa: E402
 from app.db import bug_case_ja_analisado, get_deteccao_stats, init_db  # noqa: E402
 from app.github_client import GitHubClient  # noqa: E402
 from app.llm_client import LLMClient  # noqa: E402
@@ -41,6 +41,10 @@ def main():
                    help="quantos defeitos reconstituir")
     p.add_argument("--sem-rag", action="store_true",
                    help="roda tudo sem RAG (linha de base), em vez de alternar")
+    p.add_argument("--pareado", action="store_true",
+                   help="submete CADA caso às duas condições, com e sem RAG")
+    p.add_argument("--repeticoes", type=int, default=1,
+                   help="quantas vezes repetir cada combinação de caso e condição")
     args = p.parse_args()
 
     init_db()
@@ -66,30 +70,51 @@ def main():
 
     analisados = 0
     for i, caso in enumerate(casos):
-        if bug_case_ja_analisado(args.owner, args.repo, caso["sha_da_correcao"]):
-            print(f"  [pulado, já analisado] {caso['mensagem'][:60]}", flush=True)
-            continue
-
-        use_rag = False if args.sem_rag else (i % 2 == 0)
-
-        registros = analisar_caso(
-            github, llm, args.owner, args.repo, caso, use_rag=use_rag
+        # Condições a aplicar a ESTE caso.
+        #
+        # No modo pareado o mesmo defeito passa pelas duas condições, o que
+        # isola o efeito da recuperação semântica: alternando entre casos,
+        # como antes, a diferença observada poderia vir dos defeitos serem
+        # diferentes, e não da condição.
+        condicoes = condicoes_do_caso(
+            i, sem_rag=args.sem_rag, pareado=args.pareado
         )
-        analisados += len(registros)
 
-        marcador = "COM RAG" if use_rag else "SEM RAG"
-        riscos = ", ".join(r.risk_level for r in registros) or "nenhuma função"
-        print(f"  [{int(time.time()-inicio):>4}s] {marcador} | "
-              f"{caso['mensagem'][:48]:<48} | {riscos}", flush=True)
+        for use_rag in condicoes:
+            for repeticao in range(1, args.repeticoes + 1):
+                if bug_case_ja_analisado(
+                    args.owner, args.repo, caso["sha_da_correcao"],
+                    used_rag=use_rag, repeticao=repeticao,
+                ):
+                    print(f"  [pulado, já analisado] {caso['mensagem'][:48]}",
+                          flush=True)
+                    continue
 
-        # "desconhecido" significa que a resposta do modelo não pôde ser
-        # interpretada — normalmente JSON cortado por limite de tokens. Isso
-        # já descartou uma detecção correta uma vez, então tem que ser
-        # barulhento em vez de virar só mais uma linha no log.
-        falhas = sum(1 for r in registros if r.risk_level == "desconhecido")
-        if falhas:
-            print(f"       [ATENÇÃO] {falhas} resposta(s) não interpretável(is) — "
-                  f"análise perdida. Verifique LLM_MAX_OUTPUT_TOKENS.", flush=True)
+                registros = analisar_caso(
+                    github, llm, args.owner, args.repo, caso,
+                    use_rag=use_rag, repeticao=repeticao,
+                )
+                analisados += len(registros)
+
+                marcador = "COM RAG" if use_rag else "SEM RAG"
+                sufixo = f" #{repeticao}" if args.repeticoes > 1 else ""
+                riscos = ", ".join(r.risk_level for r in registros) or "nenhuma função"
+                print(f"  [{int(time.time()-inicio):>4}s] {marcador}{sufixo} | "
+                      f"{caso['mensagem'][:44]:<44} | {riscos}", flush=True)
+
+                # "desconhecido" significa que a resposta do modelo não pôde
+                # ser interpretada — normalmente JSON cortado por limite de
+                # tokens. Isso já descartou uma detecção correta uma vez,
+                # então tem que ser barulhento em vez de virar só mais uma
+                # linha no log.
+                falhas = sum(
+                    1 for r in registros if r.risk_level == "desconhecido"
+                )
+                if falhas:
+                    print(f"       [ATENÇÃO] {falhas} resposta(s) não "
+                          f"interpretável(is) — análise perdida. Verifique "
+                          f"LLM_MAX_OUTPUT_TOKENS.", flush=True)
+
 
     print(f"\n{analisados} análises registradas em {int(time.time()-inicio)}s")
     print("\nSituação atual:")

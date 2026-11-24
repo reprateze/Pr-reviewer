@@ -156,6 +156,14 @@ class BugDetectionCase(SQLModel, table=True):
     # comparar com o gabarito. Fica nula nas versões de prompt que não pedem
     # o número da linha.
     linha_apontada: int | None = None
+
+    # Qual repetição desta combinação de caso e condição.
+    #
+    # Os modelos não são determinísticos: a mesma entrada pode produzir
+    # detecção numa execução e não em outra. Repetir e guardar cada execução
+    # separadamente é o que permite medir essa variação, em vez de atribuir ao
+    # acaso um resultado que talvez fosse sistemático.
+    repeticao: int = 1
     llm_model: str | None = None
     # Versão do prompt usada. Sem isso, comparar resultados de épocas
     # diferentes fica impossível: não dá pra saber se a diferença veio da
